@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>報名系統 - 繳費證明</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>區會報名系統</h1>
+      <p id="clubInfo">載入中...</p>
+    </div>
+
+    <div class="nav">
+      <a href="/" id="navLogout">登出</a>
+      <a href="/register">報名</a>
+      <a href="/payment" class="active">繳費證明</a>
+      <a href="/summary">公開統計</a>
+    </div>
+
+    <div class="card">
+      <h2 class="mb-20">上傳繳費證明</h2>
+      <div id="alertBox" class="hidden"></div>
+
+      <div class="file-upload" id="dropZone">
+        <input type="file" id="fileInput" accept="image/*,.pdf">
+        <p>點擊或拖曳檔案至此</p>
+        <p style="font-size: 12px; color: #999;">支援格式：JPG、PNG、GIF、PDF（最大 10MB）</p>
+      </div>
+
+      <div id="preview" class="preview-container hidden"></div>
+
+      <div class="form-group mt-10">
+        <label>關聯報名（選填）</label>
+        <select id="relatedReg">
+          <option value="">不關聯特定報名</option>
+        </select>
+      </div>
+
+      <button class="btn btn-primary mt-10" id="uploadBtn" disabled>上傳</button>
+    </div>
+
+    <div class="card">
+      <h2 class="mb-20">上傳記錄</h2>
+      <div class="loading hidden" id="loadingList">
+        <div class="spinner"></div>
+        <p>載入中...</p>
+      </div>
+      <div id="uploadList" class="upload-list"></div>
+    </div>
+  </div>
+
+  <script>
+    const token = localStorage.getItem('token');
+    if (!token) window.location.href = '/';
+
+    let selectedFile = null;
+
+    function showAlert(msg, type = 'success') {
+      const box = document.getElementById('alertBox');
+      box.className = `alert alert-${type}`;
+      box.textContent = msg;
+      box.classList.remove('hidden');
+      setTimeout(() => box.classList.add('hidden'), 3000);
+    }
+
+    function statusBadge(status) {
+      const map = { pending: '待審核', approved: '已確認', rejected: '已駁回' };
+      return `<span class="badge badge-${status}">${map[status] || status}</span>`;
+    }
+
+    const dropZone = document.getElementById('dropZone');
+    const fileInput = document.getElementById('fileInput');
+    const preview = document.getElementById('preview');
+    const uploadBtn = document.getElementById('uploadBtn');
+
+    dropZone.addEventListener('click', () => fileInput.click());
+
+    dropZone.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      dropZone.style.borderColor = '#667eea';
+      dropZone.style.background = '#f8f9ff';
+    });
+
+    dropZone.addEventListener('dragleave', () => {
+      dropZone.style.borderColor = '#667eea';
+      dropZone.style.background = '';
+    });
+
+    dropZone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropZone.style.borderColor = '#667eea';
+      dropZone.style.background = '';
+      const file = e.dataTransfer.files[0];
+      if (file) handleFile(file);
+    });
+
+    fileInput.addEventListener('change', (e) => {
+      if (e.target.files[0]) handleFile(e.target.files[0]);
+    });
+
+    function handleFile(file) {
+      const allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'application/pdf'];
+      if (!allowedTypes.includes(file.type)) {
+        showAlert('不支援的檔案格式', 'error');
+        return;
+      }
+      if (file.size > 10 * 1024 * 1024) {
+        showAlert('檔案大小超過 10MB', 'error');
+        return;
+      }
+
+      selectedFile = file;
+      preview.classList.remove('hidden');
+
+      if (file.type === 'application/pdf') {
+        preview.innerHTML = `
+          <div class="preview-item">
+            <div class="file-icon">PDF</div>
+          </div>
+          <p style="align-self: center;">${file.name}</p>
+        `;
+      } else {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          preview.innerHTML = `
+            <div class="preview-item">
+              <img src="${e.target.result}" alt="預覽">
+            </div>
+            <p style="align-self: center;">${file.name}</p>
+          `;
+        };
+        reader.readAsDataURL(file);
+      }
+
+      uploadBtn.disabled = false;
+    }
+
+    uploadBtn.addEventListener('click', async () => {
+      if (!selectedFile) return;
+
+      const formData = new FormData();
+      formData.append('file', selectedFile);
+      formData.append('registration_id', document.getElementById('relatedReg').value);
+
+      try {
+        uploadBtn.disabled = true;
+        uploadBtn.textContent = '上傳中...';
+
+        const res = await fetch('/api/payment/upload', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}` },
+          body: formData
+        });
+
+        const data = await res.json();
+        if (!res.ok) { showAlert(data.error, 'error'); return; }
+
+        showAlert('上傳成功');
+        selectedFile = null;
+        preview.classList.add('hidden');
+        preview.innerHTML = '';
+        fileInput.value = '';
+        loadUploads();
+      } catch (err) {
+        showAlert('上傳失敗: ' + err.message, 'error');
+      } finally {
+        uploadBtn.disabled = false;
+        uploadBtn.textContent = '上傳';
+      }
+    });
+
+    async function loadRegistrations() {
+      try {
+        const res = await fetch('/api/my-registrations', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (res.status === 401) { localStorage.clear(); window.location.href = '/'; return; }
+        const data = await res.json();
+
+        document.getElementById('clubInfo').textContent =
+          `${data.club.club_name} (${data.club.club_id})`;
+
+        const select = document.getElementById('relatedReg');
+        data.registrations.forEach(r => {
+          const opt = document.createElement('option');
+          opt.value = r.id;
+          opt.textContent = `${r.name} (${r.position || '無職稱'})`;
+          select.appendChild(opt);
+        });
+      } catch (err) {
+        console.error(err);
+      }
+    }
+
+    async function loadUploads() {
+      document.getElementById('loadingList').classList.remove('hidden');
+      try {
+        const res = await fetch('/api/payment/my-uploads', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        const uploads = await res.json();
+
+        const list = document.getElementById('uploadList');
+        if (uploads.length === 0) {
+          list.innerHTML = '<p class="text-center" style="color: #999; padding: 20px;">尚無上傳記錄</p>';
+        } else {
+          list.innerHTML = uploads.map(u => `
+            <div class="upload-item">
+              ${u.file_type === 'pdf'
+                ? '<div class="file-icon" style="width:60px;height:60px;display:flex;align-items:center;justify-content:center;background:#f8d7da;border-radius:6px;font-size:20px;">PDF</div>'
+                : `<img src="${u.file_path}" alt="繳費證明">`
+              }
+              <div class="file-info">
+                <h4>${u.file_name || '繳費證明'}</h4>
+                <p>上傳時間：${new Date(u.uploaded_at).toLocaleString('zh-TW')}</p>
+                <p>狀態：${statusBadge(u.status)}</p>
+                ${u.reviewed_at ? `<p>審核時間：${new Date(u.reviewed_at).toLocaleString('zh-TW')}</p>` : ''}
+              </div>
+            </div>
+          `).join('');
+        }
+      } catch (err) {
+        console.error(err);
+      } finally {
+        document.getElementById('loadingList').classList.add('hidden');
+      }
+    }
+
+    loadRegistrations();
+    loadUploads();
+  </script>
+</body>
+</html>

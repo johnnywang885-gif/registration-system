@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>報名系統 - 管理後台</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>區會報名系統</h1>
+      <p>管理後台</p>
+    </div>
+
+    <div class="nav">
+      <a href="/" id="navLogout">登出</a>
+      <a href="/summary">公開統計</a>
+      <a href="/admin" class="active admin-link">管理後台</a>
+    </div>
+
+    <div class="card">
+      <div class="tab-container">
+        <div class="tab active" data-tab="registrations">報名管理</div>
+        <div class="tab" data-tab="payments">繳費審核</div>
+        <div class="tab" data-tab="clubs">社團管理</div>
+        <div class="tab" data-tab="settings">系統設定</div>
+      </div>
+
+      <!-- 報名管理 -->
+      <div class="tab-content active" id="tab-registrations">
+        <div class="filter-bar">
+          <div class="form-group">
+            <label>篩選社別</label>
+            <select id="filterClub"><option value="">全部</option></select>
+          </div>
+          <div class="form-group">
+            <label>篩選階段</label>
+            <select id="filterPhase">
+              <option value="">全部</option>
+              <option value="1">第一階段</option>
+              <option value="2">第二階段</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>篩選狀態</label>
+            <select id="filterStatus">
+              <option value="">全部</option>
+              <option value="registered">已報名</option>
+              <option value="paid">已繳費</option>
+              <option value="forfeited">棄權</option>
+            </select>
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="loadRegistrations()">查詢</button>
+          <button class="btn btn-success btn-sm" onclick="exportExcel()">匯出 Excel</button>
+        </div>
+
+        <div class="loading hidden" id="loadingReg">
+          <div class="spinner"></div>
+        </div>
+        <div id="regTable"></div>
+      </div>
+
+      <!-- 繳費審核 -->
+      <div class="tab-content" id="tab-payments">
+        <div class="loading hidden" id="loadingPay">
+          <div class="spinner"></div>
+        </div>
+        <div id="paymentTable"></div>
+      </div>
+
+      <!-- 社團管理 -->
+      <div class="tab-content" id="tab-clubs">
+        <div class="btn-group mb-20">
+          <button class="btn btn-primary" onclick="showAddClub()">新增社團</button>
+          <button class="btn btn-success" onclick="importClubsFromExcel()">從 Excel 匯入</button>
+          <button class="btn btn-secondary" onclick="importDefaultClubs()">匯入預設 31 社</button>
+        </div>
+        <input type="file" id="excelFileInput" accept=".xlsx,.xls" style="display:none">
+        <div class="loading hidden" id="loadingClub">
+          <div class="spinner"></div>
+        </div>
+        <div id="clubTable"></div>
+      </div>
+
+      <!-- 系統設定 -->
+      <div class="tab-content" id="tab-settings">
+        <form id="settingsForm">
+          <div class="form-row">
+            <div class="form-group">
+              <label>第一階段截止日</label>
+              <input type="date" id="settingPhase1">
+            </div>
+            <div class="form-group">
+              <label>繳費截止日</label>
+              <input type="date" id="settingPayment">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>第二階段截止日</label>
+              <input type="date" id="settingPhase2">
+            </div>
+            <div class="form-group">
+              <label>保障名額數</label>
+              <input type="number" id="settingQuota" min="1">
+            </div>
+          </div>
+          <div class="form-group">
+            <label>目前階段</label>
+            <select id="settingCurrentPhase">
+              <option value="1">第一階段</option>
+              <option value="2">第二階段</option>
+            </select>
+          </div>
+          <button type="submit" class="btn btn-primary">儲存設定</button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal -->
+  <div class="modal-overlay hidden" id="modal">
+    <div class="modal">
+      <h3 id="modalTitle">對話框</h3>
+      <div id="modalContent"></div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="closeModal()">取消</button>
+        <button class="btn btn-primary" id="modalConfirm">確定</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const token = localStorage.getItem('token');
+    if (!token) window.location.href = '/';
+
+    const isAdmin = localStorage.getItem('isAdmin') === 'true';
+    if (!isAdmin) { window.location.href = '/register'; }
+
+    // Tab switching
+    document.querySelectorAll('.tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+        tab.classList.add('active');
+        document.getElementById(`tab-${tab.dataset.tab}`).classList.add('active');
+      });
+    });
+
+    function closeModal() {
+      document.getElementById('modal').classList.add('hidden');
+    }
+
+    function statusBadge(status) {
+      const map = { registered: '已報名', paid: '已繳費', forfeited: '棄權' };
+      return `<span class="badge badge-${status}">${map[status] || status}</span>`;
+    }
+
+    function paymentStatusBadge(status) {
+      const map = { pending: '待審核', approved: '已確認', rejected: '已駁回' };
+      return `<span class="badge badge-${status}">${map[status] || status}</span>`;
+    }
+
+    // === Registrations ===
+    async function loadRegistrations() {
+      document.getElementById('loadingReg').classList.remove('hidden');
+      try {
+        const params = new URLSearchParams();
+        const clubId = document.getElementById('filterClub').value;
+        const phase = document.getElementById('filterPhase').value;
+        const status = document.getElementById('filterStatus').value;
+        if (clubId) params.set('club_id', clubId);
+        if (phase) params.set('phase', phase);
+        if (status) params.set('status', status);
+
+        const res = await fetch(`/api/admin/all?${params}`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (res.status === 401) { localStorage.clear(); window.location.href = '/'; return; }
+        const data = await res.json();
+
+        const table = document.getElementById('regTable');
+        if (data.length === 0) {
+          table.innerHTML = '<p class="text-center" style="padding: 20px; color: #999;">無資料</p>';
+        } else {
+          table.innerHTML = `
+            <table>
+              <thead>
+                <tr>
+                  <th>社號</th><th>社名</th><th>職稱</th><th>姓名</th><th>身分證</th><th>生日</th><th>手機</th><th>素/葷</th><th>階段</th><th>狀態</th><th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${data.map(r => `
+                  <tr>
+                    <td>${r.club_id}</td>
+                    <td>${r.club_name}</td>
+                    <td>${r.position || '-'}</td>
+                    <td>${r.name}</td>
+                    <td>${r.id_card || '-'}</td>
+                    <td>${r.birthday || '-'}</td>
+                    <td>${r.phone || '-'}</td>
+                    <td>${r.meal_type || '-'}</td>
+                    <td>第${r.phase}階段</td>
+                    <td>${statusBadge(r.status)}</td>
+                    <td>
+                      <div class="btn-group">
+                        ${r.status !== 'paid' ? `<button class="btn btn-sm btn-success" onclick="markPaid(${r.id})">確認繳費</button>` : ''}
+                        ${r.status !== 'forfeited' ? `<button class="btn btn-sm btn-danger" onclick="markForfeit(${r.id})">棄權</button>` : ''}
+                        ${r.status !== 'registered' ? `<button class="btn btn-sm btn-secondary" onclick="resetStatus(${r.id})">重設</button>` : ''}
+                      </div>
+                    </td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          `;
+        }
+      } catch (err) {
+        alert('載入失敗: ' + err.message);
+      } finally {
+        document.getElementById('loadingReg').classList.add('hidden');
+      }
+    }
+
+    async function markPaid(id) {
+      await fetch(`/api/admin/payment/${id}`, {
+        method: 'PUT',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      loadRegistrations();
+    }
+
+    async function markForfeit(id) {
+      if (!confirm('確定要標記為棄權？')) return;
+      await fetch(`/api/admin/forfeit/${id}`, {
+        method: 'PUT',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      loadRegistrations();
+    }
+
+    async function resetStatus(id) {
+      await fetch(`/api/admin/reset-status/${id}`, {
+        method: 'PUT',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      loadRegistrations();
+    }
+
+    function exportExcel() {
+      const params = new URLSearchParams();
+      const clubId = document.getElementById('filterClub').value;
+      const phase = document.getElementById('filterPhase').value;
+      if (clubId) params.set('club_id', clubId);
+      if (phase) params.set('phase', phase);
+
+      window.open(`/api/admin/export?${params}`, '_blank');
+    }
+
+    // === Payments ===
+    async function loadPayments() {
+      document.getElementById('loadingPay').classList.remove('hidden');
+      try {
+        const res = await fetch('/api/payment/all', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        const data = await res.json();
+
+        const table = document.getElementById('paymentTable');
+        if (data.length === 0) {
+          table.innerHTML = '<p class="text-center" style="padding: 20px; color: #999;">尚無繳費證明</p>';
+        } else {
+          table.innerHTML = `
+            <table>
+              <thead>
+                <tr><th>社號</th><th>社名</th><th>檔案</th><th>上傳時間</th><th>狀態</th><th>操作</th></tr>
+              </thead>
+              <tbody>
+                ${data.map(p => `
+                  <tr>
+                    <td>${p.club_id}</td>
+                    <td>${p.club_name}</td>
+                    <td>
+                      <a href="${p.file_path}" target="_blank" style="color: #667eea;">
+                        ${p.file_type === 'pdf' ? 'PDF 檔案' : '圖片'}
+                      </a>
+                    </td>
+                    <td>${new Date(p.uploaded_at).toLocaleString('zh-TW')}</td>
+                    <td>${paymentStatusBadge(p.status)}</td>
+                    <td>
+                      <div class="btn-group">
+                        ${p.status === 'pending' ? `
+                          <button class="btn btn-sm btn-success" onclick="reviewPayment(${p.id}, 'approve')">確認</button>
+                          <button class="btn btn-sm btn-danger" onclick="reviewPayment(${p.id}, 'reject')">駁回</button>
+                        ` : ''}
+                      </div>
+                    </td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          `;
+        }
+      } catch (err) {
+        alert('載入失敗');
+      } finally {
+        document.getElementById('loadingPay').classList.add('hidden');
+      }
+    }
+
+    async function reviewPayment(id, action) {
+      await fetch(`/api/payment/review/${id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ action })
+      });
+      loadPayments();
+      loadRegistrations();
+    }
+
+    // === Clubs ===
+    async function loadClubs() {
+      document.getElementById('loadingClub').classList.remove('hidden');
+      try {
+        const res = await fetch('/api/admin/clubs', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        const data = await res.json();
+
+        // Populate filter dropdown
+        const filterClub = document.getElementById('filterClub');
+        const currentVal = filterClub.value;
+        filterClub.innerHTML = '<option value="">全部</option>';
+        data.filter(c => !c.is_admin).forEach(c => {
+          filterClub.innerHTML += `<option value="${c.club_id}">${c.club_id} ${c.club_name}</option>`;
+        });
+        filterClub.value = currentVal;
+
+        const table = document.getElementById('clubTable');
+        table.innerHTML = `
+          <table>
+            <thead>
+              <tr><th>社號</th><th>社名</th><th>身分</th><th>操作</th></tr>
+            </thead>
+            <tbody>
+              ${data.map(c => `
+                <tr>
+                  <td>${c.club_id}</td>
+                  <td>${c.club_name}</td>
+                  <td>${c.is_admin ? '管理員' : '一般社團'}</td>
+                  <td>
+                    ${!c.is_admin ? `
+                      <div class="btn-group">
+                        <button class="btn btn-sm btn-warning" onclick="editClub(${c.club_id}, '${c.club_name}')">編輯</button>
+                        <button class="btn btn-sm btn-secondary" onclick="resetPassword(${c.club_id})">重設密碼</button>
+                        <button class="btn btn-sm btn-danger" onclick="deleteClub(${c.club_id})">刪除</button>
+                      </div>
+                    ` : '-'}
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        `;
+      } catch (err) {
+        alert('載入失敗');
+      } finally {
+        document.getElementById('loadingClub').classList.add('hidden');
+      }
+    }
+
+    function showAddClub() {
+      document.getElementById('modalTitle').textContent = '新增社團';
+      document.getElementById('modalContent').innerHTML = `
+        <div class="form-group">
+          <label>社號</label>
+          <input type="number" id="newClubId" placeholder="如 2401">
+        </div>
+        <div class="form-group">
+          <label>社名</label>
+          <input type="text" id="newClubName" placeholder="如 眉溪">
+        </div>
+        <div class="form-group">
+          <label>密碼（選填，預設為社號後四碼）</label>
+          <input type="text" id="newClubPwd" placeholder="預設為社號後四碼">
+        </div>
+      `;
+      document.getElementById('modalConfirm').onclick = addClub;
+      document.getElementById('modal').classList.remove('hidden');
+    }
+
+    async function addClub() {
+      const clubId = document.getElementById('newClubId').value;
+      const clubName = document.getElementById('newClubName').value;
+      const password = document.getElementById('newClubPwd').value;
+
+      await fetch('/api/admin/clubs', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ club_id: parseInt(clubId), club_name: clubName, password: password || undefined })
+      });
+      closeModal();
+      loadClubs();
+    }
+
+    function editClub(id, name) {
+      document.getElementById('modalTitle').textContent = '編輯社團';
+      document.getElementById('modalContent').innerHTML = `
+        <div class="form-group">
+          <label>社名</label>
+          <input type="text" id="editClubName" value="${name}">
+        </div>
+      `;
+      document.getElementById('modalConfirm').onclick = async () => {
+        await fetch(`/api/admin/clubs/${id}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({ club_name: document.getElementById('editClubName').value })
+        });
+        closeModal();
+        loadClubs();
+      };
+      document.getElementById('modal').classList.remove('hidden');
+    }
+
+    async function resetPassword(id) {
+      if (!confirm('確定要重設密碼？')) return;
+      await fetch(`/api/admin/clubs/${id}/reset-password`, {
+        method: 'PUT',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      alert('密碼已重設為預設值');
+    }
+
+    async function deleteClub(id) {
+      if (!confirm('確定要刪除此社團？')) return;
+      await fetch(`/api/admin/clubs/${id}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      loadClubs();
+    }
+
+    function importClubsFromExcel() {
+      document.getElementById('excelFileInput').click();
+    }
+
+    document.getElementById('excelFileInput').addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      const formData = new FormData();
+      formData.append('file', file);
+
+      try {
+        const res = await fetch('/api/admin/import-excel', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}` },
+          body: formData
+        });
+        const data = await res.json();
+        alert(data.message || data.error);
+        loadClubs();
+      } catch (err) {
+        alert('匯入失敗');
+      }
+      e.target.value = '';
+    });
+
+    const defaultClubs = [
+      {club_id:2401,club_name:'眉溪'},{club_id:2402,club_name:'鹿谷'},{club_id:2403,club_name:'秀峰'},
+      {club_id:2405,club_name:'竹山'},{club_id:2406,club_name:'中州'},{club_id:2407,club_name:'聖愛'},
+      {club_id:2408,club_name:'羅娜'},{club_id:2409,club_name:'春陽'},{club_id:2410,club_name:'親愛'},
+      {club_id:2412,club_name:'愛德'},{club_id:2413,club_name:'世光'},{club_id:2414,club_name:'華德'},
+      {club_id:2415,club_name:'萬豐'},{club_id:2416,club_name:'主愛'},{club_id:2417,club_name:'敬宗'},
+      {club_id:2419,club_name:'久美'},{club_id:2420,club_name:'武界'},{club_id:2421,club_name:'人倫'},
+      {club_id:2422,club_name:'埔里'},{club_id:2423,club_name:'中正'},{club_id:2424,club_name:'芳蘭'},
+      {club_id:2426,club_name:'豐丘'},{club_id:2427,club_name:'新鄉'},{club_id:2429,club_name:'望鄉'},
+      {club_id:2430,club_name:'東埔'},{club_id:2432,club_name:'雙龍'},{club_id:2433,club_name:'潭南'},
+      {club_id:2434,club_name:'雙豐'},{club_id:2436,club_name:'力行'},{club_id:2437,club_name:'十方'},
+      {club_id:2439,club_name:'清流'}
+    ];
+
+    async function importDefaultClubs() {
+      if (!confirm('確定要匯入 31 個預設社團？')) return;
+      await fetch('/api/admin/import-clubs', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ clubs: defaultClubs })
+      });
+      loadClubs();
+    }
+
+    // === Settings ===
+    async function loadSettings() {
+      try {
+        const res = await fetch('/api/admin/settings', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        const data = await res.json();
+        document.getElementById('settingPhase1').value = data.phase1_deadline || '';
+        document.getElementById('settingPayment').value = data.payment_deadline || '';
+        document.getElementById('settingPhase2').value = data.phase2_deadline || '';
+        document.getElementById('settingQuota').value = data.guaranteed_quota || 10;
+        document.getElementById('settingCurrentPhase').value = data.current_phase || '1';
+      } catch (err) {
+        console.error(err);
+      }
+    }
+
+    document.getElementById('settingsForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const settings = {
+        phase1_deadline: document.getElementById('settingPhase1').value,
+        payment_deadline: document.getElementById('settingPayment').value,
+        phase2_deadline: document.getElementById('settingPhase2').value,
+        guaranteed_quota: document.getElementById('settingQuota').value,
+        current_phase: document.getElementById('settingCurrentPhase').value
+      };
+
+      await fetch('/api/admin/settings', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(settings)
+      });
+      alert('設定已儲存');
+    });
+
+    // Init
+    loadClubs();
+    loadRegistrations();
+    loadPayments();
+    loadSettings();
+  </script>
+</body>
+</html>

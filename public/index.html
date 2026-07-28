@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>區會報名系統</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>區會報名系統</h1>
+      <p>請選擇身分並登入</p>
+    </div>
+
+    <div class="nav">
+      <a href="/" class="active">登入</a>
+      <a href="/summary">公開統計</a>
+    </div>
+
+    <div class="card" style="max-width: 400px; margin: 0 auto;">
+      <form id="loginForm">
+        <div class="form-group">
+          <label>帳號</label>
+          <input type="text" id="clubId" placeholder="請輸入社號或 admin" required>
+        </div>
+        <div class="form-group">
+          <label>密碼</label>
+          <input type="password" id="password" placeholder="請輸入密碼" required>
+        </div>
+        <div id="errorMsg" class="alert alert-error hidden"></div>
+        <button type="submit" class="btn btn-primary" style="width: 100%;">登入</button>
+      </form>
+    </div>
+  </div>
+
+  <script>
+    if (localStorage.getItem('token')) {
+      const isAdmin = localStorage.getItem('isAdmin') === 'true';
+      window.location.href = isAdmin ? '/admin' : '/register';
+    }
+
+    document.getElementById('loginForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const clubId = document.getElementById('clubId').value.trim();
+      const password = document.getElementById('password').value;
+      const errorMsg = document.getElementById('errorMsg');
+
+      try {
+        const res = await fetch('/api/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ clubId, password })
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) {
+          errorMsg.textContent = data.error;
+          errorMsg.classList.remove('hidden');
+          return;
+        }
+
+        localStorage.setItem('token', data.token);
+        localStorage.setItem('clubId', data.clubId);
+        localStorage.setItem('clubName', data.clubName);
+        localStorage.setItem('isAdmin', data.isAdmin);
+
+        window.location.href = data.isAdmin ? '/admin' : '/register';
+      } catch (err) {
+        errorMsg.textContent = '連線失敗，請稍後再試';
+        errorMsg.classList.remove('hidden');
+      }
+    });
+  </script>
+</body>
+</html>

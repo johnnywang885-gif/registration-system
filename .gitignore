@@ -1,0 +1,6 @@
+node_modules/
+data/registration.db
+uploads/payments/*
+!uploads/payments/.gitkeep
+.env
+*.log

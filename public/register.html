@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>報名系統 - 報名頁</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>區會報名系統</h1>
+      <p id="clubInfo">載入中...</p>
+    </div>
+
+    <div class="nav">
+      <a href="/" id="navLogout">登出</a>
+      <a href="/register" class="active">報名</a>
+      <a href="/payment">繳費證明</a>
+      <a href="/summary">公開統計</a>
+    </div>
+
+    <div class="card">
+      <h2 class="mb-20">報名表單</h2>
+      <div id="alertBox" class="hidden"></div>
+      <form id="regForm">
+        <div class="form-row">
+          <div class="form-group">
+            <label>職稱</label>
+            <input type="text" id="position" placeholder="如：社長、會計">
+          </div>
+          <div class="form-group">
+            <label>姓名 *</label>
+            <input type="text" id="name" placeholder="必填" required>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>身分證</label>
+            <input type="text" id="idCard" placeholder="身分證字號">
+          </div>
+          <div class="form-group">
+            <label>生日</label>
+            <input type="date" id="birthday">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>手機</label>
+            <input type="tel" id="phone" placeholder="手機號碼">
+          </div>
+          <div class="form-group">
+            <label>素/葷</label>
+            <select id="mealType">
+              <option value="">請選擇</option>
+              <option value="葷">葷食</option>
+              <option value="素">素食</option>
+            </select>
+          </div>
+        </div>
+        <div class="btn-group mt-10">
+          <button type="submit" class="btn btn-primary" id="submitBtn">新增報名</button>
+          <button type="button" class="btn btn-secondary hidden" id="cancelBtn" onclick="cancelEdit()">取消編輯</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="card">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+        <h2>本社報名名單</h2>
+        <span id="countBadge" class="badge badge-registered">已報名 0 人</span>
+      </div>
+      <div class="loading hidden" id="loadingList">
+        <div class="spinner"></div>
+        <p>載入中...</p>
+      </div>
+      <div id="regList"></div>
+    </div>
+  </div>
+
+  <script>
+    const token = localStorage.getItem('token');
+    if (!token) window.location.href = '/';
+
+    let editingId = null;
+
+    function showAlert(msg, type = 'success') {
+      const box = document.getElementById('alertBox');
+      box.className = `alert alert-${type}`;
+      box.textContent = msg;
+      box.classList.remove('hidden');
+      setTimeout(() => box.classList.add('hidden'), 3000);
+    }
+
+    function statusBadge(status) {
+      const map = { registered: '已報名', paid: '已繳費', forfeited: '棄權' };
+      return `<span class="badge badge-${status}">${map[status] || status}</span>`;
+    }
+
+    async function loadRegistrations() {
+      document.getElementById('loadingList').classList.remove('hidden');
+      try {
+        const res = await fetch('/api/my-registrations', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (res.status === 401) { localStorage.clear(); window.location.href = '/'; return; }
+        const data = await res.json();
+
+        document.getElementById('clubInfo').textContent =
+          `${data.club.club_name} (${data.club.club_id}) | 已報名 ${data.count} 人`;
+        document.getElementById('countBadge').textContent = `已報名 ${data.count} 人`;
+
+        const list = document.getElementById('regList');
+        if (data.registrations.length === 0) {
+          list.innerHTML = '<p class="text-center" style="color: #999; padding: 20px;">尚無報名資料</p>';
+        } else {
+          list.innerHTML = `
+            <table>
+              <thead>
+                <tr>
+                  <th>職稱</th><th>姓名</th><th>身分證</th><th>生日</th><th>手機</th><th>素/葷</th><th>階段</th><th>狀態</th><th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${data.registrations.map(r => `
+                  <tr>
+                    <td>${r.position || '-'}</td>
+                    <td>${r.name}</td>
+                    <td>${r.id_card || '-'}</td>
+                    <td>${r.birthday || '-'}</td>
+                    <td>${r.phone || '-'}</td>
+                    <td>${r.meal_type || '-'}</td>
+                    <td>第${r.phase}階段</td>
+                    <td>${statusBadge(r.status)}</td>
+                    <td>
+                      <div class="btn-group">
+                        <button class="btn btn-sm btn-warning" onclick='editReg(${JSON.stringify(r)})'>編輯</button>
+                        <button class="btn btn-sm btn-danger" onclick="deleteReg(${r.id})">刪除</button>
+                      </div>
+                    </td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          `;
+        }
+      } catch (err) {
+        showAlert('載入失敗: ' + err.message, 'error');
+      } finally {
+        document.getElementById('loadingList').classList.add('hidden');
+      }
+    }
+
+    function editReg(reg) {
+      editingId = reg.id;
+      document.getElementById('position').value = reg.position || '';
+      document.getElementById('name').value = reg.name;
+      document.getElementById('idCard').value = reg.id_card || '';
+      document.getElementById('birthday').value = reg.birthday || '';
+      document.getElementById('phone').value = reg.phone || '';
+      document.getElementById('mealType').value = reg.meal_type || '';
+      document.getElementById('submitBtn').textContent = '更新報名';
+      document.getElementById('cancelBtn').classList.remove('hidden');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    function cancelEdit() {
+      editingId = null;
+      document.getElementById('regForm').reset();
+      document.getElementById('submitBtn').textContent = '新增報名';
+      document.getElementById('cancelBtn').classList.add('hidden');
+    }
+
+    document.getElementById('regForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const body = {
+        position: document.getElementById('position').value,
+        name: document.getElementById('name').value,
+        id_card: document.getElementById('idCard').value,
+        birthday: document.getElementById('birthday').value,
+        phone: document.getElementById('phone').value,
+        meal_type: document.getElementById('mealType').value
+      };
+
+      try {
+        const url = editingId ? `/api/registrations/${editingId}` : '/api/registrations';
+        const method = editingId ? 'PUT' : 'POST';
+
+        const res = await fetch(url, {
+          method,
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify(body)
+        });
+
+        const data = await res.json();
+        if (!res.ok) { showAlert(data.error, 'error'); return; }
+
+        showAlert(editingId ? '更新成功' : '報名成功');
+        cancelEdit();
+        loadRegistrations();
+      } catch (err) {
+        showAlert('操作失敗: ' + err.message, 'error');
+      }
+    });
+
+    async function deleteReg(id) {
+      if (!confirm('確定要刪除此筆報名？')) return;
+      try {
+        const res = await fetch(`/api/registrations/${id}`, {
+          method: 'DELETE',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        const data = await res.json();
+        if (!res.ok) { showAlert(data.error, 'error'); return; }
+        showAlert('刪除成功');
+        loadRegistrations();
+      } catch (err) {
+        showAlert('刪除失敗: ' + err.message, 'error');
+      }
+    }
+
+    loadRegistrations();
+  </script>
+</body>
+</html>
