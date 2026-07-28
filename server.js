@@ -43,8 +43,16 @@ const upload = multer({
 });
 
 async function startServer() {
+  const uploadsDir = path.join(__dirname, 'uploads', 'payments');
+  if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+
   await initDatabase();
   console.log('Database ready');
+
+  // ===== Health Check =====
+  app.get('/health', (req, res) => {
+    res.status(200).json({ status: 'ok' });
+  });
 
   // ===== Public Routes =====
   app.get('/', (req, res) => {
@@ -420,7 +428,7 @@ async function startServer() {
     res.send(buffer);
   });
 
-  app.listen(PORT, () => {
+  app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on port ${PORT}`);
   });
 }
