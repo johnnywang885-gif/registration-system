@@ -74,38 +74,43 @@ function startServer() {
 
   // ===== Auth API =====
   app.post('/api/login', async (req, res) => {
-    const { clubId, password } = req.body;
-    if (!clubId || !password) {
-      return res.status(400).json({ error: '請輸入帳號和密碼' });
-    }
-
-    let club;
-    const input = String(clubId).trim();
-    if (input.toLowerCase() === 'admin' || input === '0') {
-      club = await getOne("SELECT * FROM clubs WHERE is_admin = 1 LIMIT 1");
-    } else {
-      const numericId = parseInt(input);
-      if (isNaN(numericId)) {
-        return res.status(401).json({ error: '帳號格式不正確' });
+    try {
+      const { clubId, password } = req.body;
+      if (!clubId || !password) {
+        return res.status(400).json({ error: '請輸入帳號和密碼' });
       }
-      club = await getOne("SELECT * FROM clubs WHERE club_id = ?", [numericId]);
-    }
 
-    if (!club) {
-      return res.status(401).json({ error: '帳號不存在' });
-    }
+      let club;
+      const input = String(clubId).trim();
+      if (input.toLowerCase() === 'admin' || input === '0') {
+        club = await getOne("SELECT * FROM clubs WHERE is_admin = 1 LIMIT 1");
+      } else {
+        const numericId = parseInt(input);
+        if (isNaN(numericId)) {
+          return res.status(401).json({ error: '帳號格式不正確' });
+        }
+        club = await getOne("SELECT * FROM clubs WHERE club_id = ?", [numericId]);
+      }
 
-    if (!bcrypt.compareSync(password, club.password)) {
-      return res.status(401).json({ error: '密碼錯誤' });
-    }
+      if (!club) {
+        return res.status(401).json({ error: '帳號不存在' });
+      }
 
-    const token = generateToken(club);
-    res.json({
-      token,
-      clubId: club.club_id,
-      clubName: club.club_name,
-      isAdmin: club.is_admin === 1
-    });
+      if (!bcrypt.compareSync(password, club.password)) {
+        return res.status(401).json({ error: '密碼錯誤' });
+      }
+
+      const token = generateToken(club);
+      res.json({
+        token,
+        clubId: club.club_id,
+        clubName: club.club_name,
+        isAdmin: club.is_admin === 1
+      });
+    } catch (err) {
+      console.error('Login error:', err.message);
+      res.status(500).json({ error: '資料庫尚未就緒，請稍後再試' });
+    }
   });
 
   app.get('/api/me', authMiddleware, async (req, res) => {
@@ -116,30 +121,35 @@ function startServer() {
 
   // ===== Summary API (Public) =====
   app.get('/api/summary', async (req, res) => {
-    const settingsRows = await getAll("SELECT key, value FROM settings");
-    const settings = {};
-    settingsRows.forEach(s => { settings[s.key] = s.value; });
+    try {
+      const settingsRows = await getAll("SELECT key, value FROM settings");
+      const settings = {};
+      settingsRows.forEach(s => { settings[s.key] = s.value; });
 
-    const summary = await getAll(`
-      SELECT c.club_id, c.club_name,
-        COUNT(r.id) as total_count,
-        MAX(r.created_at) as last_register_time
-      FROM clubs c
-      LEFT JOIN registrations r ON c.club_id = r.club_id AND r.status != 'forfeited'
-      WHERE c.is_admin = 0
-      GROUP BY c.club_id, c.club_name
-      ORDER BY c.club_id
-    `);
+      const summary = await getAll(`
+        SELECT c.club_id, c.club_name,
+          COUNT(r.id) as total_count,
+          MAX(r.created_at) as last_register_time
+        FROM clubs c
+        LEFT JOIN registrations r ON c.club_id = r.club_id AND r.status != 'forfeited'
+        WHERE c.is_admin = 0
+        GROUP BY c.club_id, c.club_name
+        ORDER BY c.club_id
+      `);
 
-    const phase1Total = await getOne("SELECT COUNT(*) as cnt FROM registrations WHERE phase = 1 AND status != 'forfeited'");
-    const phase2Total = await getOne("SELECT COUNT(*) as cnt FROM registrations WHERE phase = 2 AND status != 'forfeited'");
+      const phase1Total = await getOne("SELECT COUNT(*) as cnt FROM registrations WHERE phase = 1 AND status != 'forfeited'");
+      const phase2Total = await getOne("SELECT COUNT(*) as cnt FROM registrations WHERE phase = 2 AND status != 'forfeited'");
 
-    res.json({
-      settings,
-      summary,
-      phase1Total: phase1Total?.cnt || 0,
-      phase2Total: phase2Total?.cnt || 0
-    });
+      res.json({
+        settings,
+        summary,
+        phase1Total: phase1Total?.cnt || 0,
+        phase2Total: phase2Total?.cnt || 0
+      });
+    } catch (err) {
+      console.error('Summary error:', err.message);
+      res.status(500).json({ error: '資料庫尚未就緒，請稍後再試' });
+    }
   });
 
   // ===== Registration API =====
@@ -509,11 +519,18 @@ function startServer() {
     res.setHeader('Content-Disposition', 'attachment; filename=registration_report.xlsx');
     res.send(buffer);
   });
+
+  // ===== Global Error Handler (catches async errors in route handlers) =====
+  app.use((err, req, res, next) => {
+    console.error('Route error:', err.message);
+    if (res.headersSent) return next(err);
+    res.status(500).json({ error: '伺服器錯誤: ' + err.message });
+  });
+
   // ===== Start Server =====
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on port ${PORT}`);
   });
-
   // ===== Init Database (non-blocking, in background) =====
   initDatabase()
     .then(() => console.log('Database ready'))

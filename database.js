@@ -93,20 +93,24 @@ function getDb() {
 }
 
 async function runQuery(sql, params = []) {
+  if (!db) throw new Error('Database not connected');
   await db.execute({ sql, args: params || [] });
 }
 
 async function getAll(sql, params = []) {
+  if (!db) throw new Error('Database not connected');
   const result = await db.execute({ sql, args: params || [] });
   return result.rows;
 }
 
 async function getOne(sql, params = []) {
+  if (!db) throw new Error('Database not connected');
   const result = await db.execute({ sql, args: params || [] });
   return result.rows[0] || null;
 }
 
 async function insert(sql, params = []) {
+  if (!db) throw new Error('Database not connected');
   const result = await db.execute({ sql, args: params || [] });
   return Number(result.lastInsertRowid);
 }
