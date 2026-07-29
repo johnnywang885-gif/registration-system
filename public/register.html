@@ -5,6 +5,146 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>報名系統 - 報名頁</title>
   <link rel="stylesheet" href="/css/style.css">
+  <style>
+    .reg-form-card {
+      max-width: 680px;
+      margin: 0 auto 20px;
+    }
+    .reg-form-card .form-group input,
+    .reg-form-card .form-group select {
+      font-size: 15px;
+      padding: 12px 14px;
+    }
+    .reg-form-card .form-actions {
+      display: flex;
+      justify-content: center;
+      gap: 12px;
+      margin-top: 24px;
+      padding-top: 20px;
+      border-top: 1px solid #e8ddd2;
+    }
+    .reg-form-card .form-section-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: #b5a898;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 14px;
+    }
+    .reg-list-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+    .reg-list-header h2 {
+      font-size: 18px;
+      color: #4a3728;
+    }
+    .reg-cards {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .reg-card {
+      background: #fff;
+      border: 1px solid #e8ddd2;
+      border-radius: 10px;
+      padding: 18px 20px;
+      transition: box-shadow 0.2s ease, transform 0.15s ease;
+      cursor: default;
+    }
+    .reg-card:hover {
+      box-shadow: 0 4px 16px rgba(139, 109, 77, 0.12);
+      transform: translateY(-1px);
+    }
+    .reg-card-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .reg-card-name {
+      font-size: 16px;
+      font-weight: 600;
+      color: #4a3728;
+    }
+    .reg-card-position {
+      font-size: 13px;
+      color: #8d7b6b;
+      margin-top: 2px;
+    }
+    .reg-card-details {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 16px;
+      margin-bottom: 14px;
+    }
+    .reg-card-field {
+      font-size: 13px;
+      color: #8d7b6b;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .reg-card-field strong {
+      color: #7d6b5d;
+      font-weight: 500;
+    }
+    .reg-card-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      padding-top: 12px;
+      border-top: 1px solid #f0e8df;
+    }
+    .reg-card-phase {
+      font-size: 12px;
+      color: #b5a898;
+      background: #f5f0eb;
+      padding: 2px 8px;
+      border-radius: 4px;
+    }
+    .reg-empty {
+      text-align: center;
+      padding: 48px 20px;
+      color: #b5a898;
+    }
+    .reg-empty-icon {
+      font-size: 40px;
+      margin-bottom: 12px;
+      opacity: 0.5;
+    }
+    .reg-empty p {
+      font-size: 14px;
+    }
+    .btn-loading {
+      position: relative;
+      pointer-events: none;
+    }
+    .btn-loading::after {
+      content: '';
+      display: inline-block;
+      width: 14px;
+      height: 14px;
+      border: 2px solid rgba(255,255,255,0.3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      margin-left: 6px;
+      vertical-align: middle;
+    }
+    @media (max-width: 768px) {
+      .reg-card-top {
+        flex-direction: column;
+        gap: 4px;
+      }
+      .reg-card-details {
+        gap: 4px 12px;
+      }
+    }
+  </style>
 </head>
 <body>
   <div class="container">
@@ -20,9 +160,10 @@
       <a href="/summary">公開統計</a>
     </div>
 
-    <div class="card">
-      <h2 class="mb-20">報名表單</h2>
+    <div class="card reg-form-card">
+      <h2 class="mb-20" style="font-size:18px; color:#4a3728;">報名表單</h2>
       <div id="alertBox" class="hidden"></div>
+      <div class="reg-form-card form-section-title">基本資料</div>
       <form id="regForm">
         <div class="form-row">
           <div class="form-group">
@@ -58,7 +199,7 @@
             </select>
           </div>
         </div>
-        <div class="btn-group mt-10">
+        <div class="form-actions">
           <button type="submit" class="btn btn-primary" id="submitBtn">新增報名</button>
           <button type="button" class="btn btn-secondary hidden" id="cancelBtn" onclick="cancelEdit()">取消編輯</button>
         </div>
@@ -66,7 +207,7 @@
     </div>
 
     <div class="card">
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+      <div class="reg-list-header">
         <h2>本社報名名單</h2>
         <span id="countBadge" class="badge badge-registered">已報名 0 人</span>
       </div>
@@ -89,12 +230,49 @@
       box.className = `alert alert-${type}`;
       box.textContent = msg;
       box.classList.remove('hidden');
-      setTimeout(() => box.classList.add('hidden'), 3000);
+      box.style.opacity = '0';
+      box.style.transform = 'translateY(-8px)';
+      requestAnimationFrame(() => {
+        box.style.transition = 'opacity 0.3s ease, transform 0.3s ease';
+        box.style.opacity = '1';
+        box.style.transform = 'translateY(0)';
+      });
+      setTimeout(() => {
+        box.style.opacity = '0';
+        box.style.transform = 'translateY(-8px)';
+        setTimeout(() => box.classList.add('hidden'), 300);
+      }, 3000);
     }
 
     function statusBadge(status) {
       const map = { registered: '已報名', paid: '已繳費', forfeited: '棄權' };
       return `<span class="badge badge-${status}">${map[status] || status}</span>`;
+    }
+
+    function renderRegCard(r) {
+      return `
+        <div class="reg-card">
+          <div class="reg-card-top">
+            <div>
+              <div class="reg-card-name">${r.name}</div>
+              ${r.position ? `<div class="reg-card-position">${r.position}</div>` : ''}
+            </div>
+            <div style="display:flex; align-items:center; gap:8px; flex-shrink:0;">
+              <span class="reg-card-phase">第${r.phase}階段</span>
+              ${statusBadge(r.status)}
+            </div>
+          </div>
+          <div class="reg-card-details">
+            ${r.id_card ? `<span class="reg-card-field"><strong>身分證</strong> ${r.id_card}</span>` : ''}
+            ${r.birthday ? `<span class="reg-card-field"><strong>生日</strong> ${r.birthday}</span>` : ''}
+            ${r.phone ? `<span class="reg-card-field"><strong>手機</strong> ${r.phone}</span>` : ''}
+            ${r.meal_type ? `<span class="reg-card-field"><strong>餐別</strong> ${r.meal_type}</span>` : ''}
+          </div>
+          <div class="reg-card-actions">
+            <button class="btn btn-sm btn-warning" onclick='editReg(${JSON.stringify(r)})'>編輯</button>
+            <button class="btn btn-sm btn-danger" onclick="deleteReg(${r.id})">刪除</button>
+          </div>
+        </div>`;
     }
 
     async function loadRegistrations() {
@@ -112,37 +290,13 @@
 
         const list = document.getElementById('regList');
         if (data.registrations.length === 0) {
-          list.innerHTML = '<p class="text-center" style="color: #999; padding: 20px;">尚無報名資料</p>';
-        } else {
           list.innerHTML = `
-            <table>
-              <thead>
-                <tr>
-                  <th>職稱</th><th>姓名</th><th>身分證</th><th>生日</th><th>手機</th><th>素/葷</th><th>階段</th><th>狀態</th><th>操作</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${data.registrations.map(r => `
-                  <tr>
-                    <td>${r.position || '-'}</td>
-                    <td>${r.name}</td>
-                    <td>${r.id_card || '-'}</td>
-                    <td>${r.birthday || '-'}</td>
-                    <td>${r.phone || '-'}</td>
-                    <td>${r.meal_type || '-'}</td>
-                    <td>第${r.phase}階段</td>
-                    <td>${statusBadge(r.status)}</td>
-                    <td>
-                      <div class="btn-group">
-                        <button class="btn btn-sm btn-warning" onclick='editReg(${JSON.stringify(r)})'>編輯</button>
-                        <button class="btn btn-sm btn-danger" onclick="deleteReg(${r.id})">刪除</button>
-                      </div>
-                    </td>
-                  </tr>
-                `).join('')}
-              </tbody>
-            </table>
-          `;
+            <div class="reg-empty">
+              <div class="reg-empty-icon">📋</div>
+              <p>尚無報名資料</p>
+            </div>`;
+        } else {
+          list.innerHTML = `<div class="reg-cards">${data.registrations.map(renderRegCard).join('')}</div>`;
         }
       } catch (err) {
         showAlert('載入失敗: ' + err.message, 'error');
@@ -168,11 +322,14 @@
       editingId = null;
       document.getElementById('regForm').reset();
       document.getElementById('submitBtn').textContent = '新增報名';
+      document.getElementById('submitBtn').classList.remove('btn-loading');
+      document.getElementById('submitBtn').disabled = false;
       document.getElementById('cancelBtn').classList.add('hidden');
     }
 
     document.getElementById('regForm').addEventListener('submit', async (e) => {
       e.preventDefault();
+      const btn = document.getElementById('submitBtn');
       const body = {
         position: document.getElementById('position').value,
         name: document.getElementById('name').value,
@@ -181,6 +338,9 @@
         phone: document.getElementById('phone').value,
         meal_type: document.getElementById('mealType').value
       };
+
+      btn.disabled = true;
+      btn.classList.add('btn-loading');
 
       try {
         const url = editingId ? `/api/registrations/${editingId}` : '/api/registrations';
@@ -203,6 +363,9 @@
         loadRegistrations();
       } catch (err) {
         showAlert('操作失敗: ' + err.message, 'error');
+      } finally {
+        btn.disabled = false;
+        btn.classList.remove('btn-loading');
       }
     });
 
