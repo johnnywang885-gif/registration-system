@@ -43,16 +43,26 @@ const upload = multer({
 });
 
 async function startServer() {
-  const uploadsDir = path.join(__dirname, 'uploads', 'payments');
-  if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
-
-  await initDatabase();
-  console.log('Database ready');
-
-  // ===== Health Check =====
+  // ===== Health Check (MUST be first, before any async init) =====
   app.get('/health', (req, res) => {
     res.status(200).json({ status: 'ok' });
   });
+
+  const uploadsDir = path.join(__dirname, 'uploads', 'payments');
+  if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+
+  // Start listening BEFORE database init so healthcheck responds immediately
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server running on port ${PORT}`);
+  });
+
+  // Database init runs after server starts listening
+  try {
+    await initDatabase();
+    console.log('Database ready');
+  } catch (err) {
+    console.error('Database init failed:', err.message);
+  }
 
   // ===== Public Routes =====
   app.get('/', (req, res) => {
@@ -511,10 +521,6 @@ async function startServer() {
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', 'attachment; filename=registration_report.xlsx');
     res.send(buffer);
-  });
-
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running on port ${PORT}`);
   });
 }
 
