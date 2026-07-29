@@ -382,17 +382,10 @@ function startServer() {
     if (action === 'approve') {
       const proof = await getOne("SELECT * FROM payment_proofs WHERE id = ?", [req.params.id]);
       if (proof) {
-        let regId = proof.registration_id;
-        if (!regId) {
-          const reg = await getOne(
-            "SELECT id FROM registrations WHERE club_id = ? AND status = 'registered' ORDER BY created_at ASC LIMIT 1",
-            [proof.club_id]
-          );
-          if (reg) regId = reg.id;
-        }
-        if (regId) {
-          await runQuery("UPDATE registrations SET status = 'paid' WHERE id = ?", [regId]);
-        }
+        await runQuery(
+          "UPDATE registrations SET status = 'paid' WHERE club_id = ? AND status = 'registered'",
+          [proof.club_id]
+        );
       }
     }
 
