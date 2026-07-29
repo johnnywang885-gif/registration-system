@@ -1,33 +1,27 @@
-const initSqlJs = require('sql.js');
-const fs = require('fs');
-const path = require('path');
+const { createClient } = require('@libsql/client');
 const bcrypt = require('bcryptjs');
-
-const DB_PATH = path.join(__dirname, 'data', 'registration.db');
 
 let db = null;
 
 async function initDatabase() {
-  const SQL = await initSqlJs();
+  const url = process.env.TURSO_DATABASE_URL;
+  const authToken = process.env.TURSO_AUTH_TOKEN;
 
-  if (fs.existsSync(DB_PATH)) {
-    const buffer = fs.readFileSync(DB_PATH);
-    db = new SQL.Database(buffer);
-  } else {
-    db = new SQL.Database();
+  if (!url) {
+    throw new Error('TURSO_DATABASE_URL environment variable is required');
   }
 
-  db.run(`
-    CREATE TABLE IF NOT EXISTS clubs (
+  db = createClient({ url, authToken: authToken || undefined });
+
+  // Create tables
+  await db.batch([
+    `CREATE TABLE IF NOT EXISTS clubs (
       club_id INTEGER PRIMARY KEY,
       club_name TEXT NOT NULL,
       password TEXT NOT NULL,
       is_admin INTEGER DEFAULT 0
-    )
-  `);
-
-  db.run(`
-    CREATE TABLE IF NOT EXISTS registrations (
+    )`,
+    `CREATE TABLE IF NOT EXISTS registrations (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       club_id INTEGER NOT NULL,
       position TEXT,
@@ -40,11 +34,8 @@ async function initDatabase() {
       status TEXT DEFAULT 'registered',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (club_id) REFERENCES clubs(club_id)
-    )
-  `);
-
-  db.run(`
-    CREATE TABLE IF NOT EXISTS payment_proofs (
+    )`,
+    `CREATE TABLE IF NOT EXISTS payment_proofs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       registration_id INTEGER,
       club_id INTEGER NOT NULL,
@@ -57,26 +48,27 @@ async function initDatabase() {
       uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (registration_id) REFERENCES registrations(id),
       FOREIGN KEY (club_id) REFERENCES clubs(club_id)
-    )
-  `);
-
-  db.run(`
-    CREATE TABLE IF NOT EXISTS settings (
+    )`,
+    `CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
       value TEXT
-    )
-  `);
+    )`
+  ], 'write');
 
-  const adminCheck = db.exec("SELECT COUNT(*) as cnt FROM clubs WHERE is_admin = 1");
-  const adminCount = adminCheck[0]?.values[0][0] || 0;
+  // Create default admin if not exists
+  const adminCheck = await db.execute("SELECT COUNT(*) as cnt FROM clubs WHERE is_admin = 1");
+  const adminCount = adminCheck.rows[0]?.cnt || 0;
   if (adminCount === 0) {
     const hash = bcrypt.hashSync('admin123', 10);
-    db.run("INSERT OR IGNORE INTO clubs (club_id, club_name, password, is_admin) VALUES (?, ?, ?, ?)",
-      [0, '系統管理員', hash, 1]);
+    await db.execute({
+      sql: "INSERT OR IGNORE INTO clubs (club_id, club_name, password, is_admin) VALUES (?, ?, ?, ?)",
+      args: [0, '系統管理員', hash, 1]
+    });
   }
 
-  const settingsCheck = db.exec("SELECT COUNT(*) as cnt FROM settings");
-  const settingsCount = settingsCheck[0]?.values[0][0] || 0;
+  // Create default settings if not exists
+  const settingsCheck = await db.execute("SELECT COUNT(*) as cnt FROM settings");
+  const settingsCount = settingsCheck.rows[0]?.cnt || 0;
   if (settingsCount === 0) {
     const defaultSettings = [
       ['phase1_deadline', '2025-09-20'],
@@ -85,71 +77,54 @@ async function initDatabase() {
       ['guaranteed_quota', '10'],
       ['current_phase', '1']
     ];
-    for (const [key, value] of defaultSettings) {
-      db.run("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", [key, value]);
-    }
+    const stmts = defaultSettings.map(([key, value]) => ({
+      sql: "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
+      args: [key, value]
+    }));
+    await db.batch(stmts, 'write');
   }
 
-  saveDatabase();
-  console.log('Database initialized');
+  console.log('Database connected to Turso');
   return db;
-}
-
-function saveDatabase() {
-  if (!db) return;
-  const dir = path.dirname(DB_PATH);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  const data = db.export();
-  const buffer = Buffer.from(data);
-  fs.writeFileSync(DB_PATH, buffer);
 }
 
 function getDb() {
   return db;
 }
 
-function runQuery(sql, params = []) {
-  db.run(sql, params);
-  saveDatabase();
+async function runQuery(sql, params = []) {
+  await db.execute({ sql, args: params || [] });
 }
 
-function getAll(sql, params = []) {
-  const result = db.exec(sql, params);
-  if (result.length === 0) return [];
-  const columns = result[0].columns;
-  return result[0].values.map(row => {
-    const obj = {};
-    columns.forEach((col, i) => { obj[col] = row[i]; });
-    return obj;
-  });
+async function getAll(sql, params = []) {
+  const result = await db.execute({ sql, args: params || [] });
+  return result.rows;
 }
 
-function getOne(sql, params = []) {
-  const result = db.exec(sql, params);
-  if (result.length === 0) return null;
-  const columns = result[0].columns;
-  const row = result[0].values[0];
-  const obj = {};
-  columns.forEach((col, i) => { obj[col] = row[i]; });
-  return obj;
+async function getOne(sql, params = []) {
+  const result = await db.execute({ sql, args: params || [] });
+  return result.rows[0] || null;
 }
 
-function insert(sql, params = []) {
-  db.run(sql, params);
-  const lastId = db.exec("SELECT last_insert_rowid() as id")[0]?.values[0][0];
-  saveDatabase();
-  return lastId;
+async function insert(sql, params = []) {
+  const result = await db.execute({ sql, args: params || [] });
+  return Number(result.lastInsertRowid);
 }
 
-function importClubs(clubsData) {
-  const stmt = db.prepare("INSERT OR REPLACE INTO clubs (club_id, club_name, password, is_admin) VALUES (?, ?, ?, 0)");
-  for (const club of clubsData) {
+async function importClubs(clubsData) {
+  const stmts = clubsData.map(club => {
     const defaultPwd = String(club.club_id).slice(-4);
     const hash = bcrypt.hashSync(defaultPwd, 10);
-    stmt.run([club.club_id, club.club_name, hash]);
-  }
-  stmt.free();
-  saveDatabase();
+    return {
+      sql: "INSERT OR REPLACE INTO clubs (club_id, club_name, password, is_admin) VALUES (?, ?, ?, 0)",
+      args: [club.club_id, club.club_name, hash]
+    };
+  });
+  await db.batch(stmts, 'write');
+}
+
+function saveDatabase() {
+  // No-op: data is persisted in Turso cloud
 }
 
 module.exports = {

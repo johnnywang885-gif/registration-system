@@ -115,6 +115,19 @@
           </div>
           <button type="submit" class="btn btn-primary">儲存設定</button>
         </form>
+
+        <hr style="margin: 30px 0; border: 1px solid #e0e0e0;">
+
+        <h3 style="margin-bottom: 16px;">資料備份與還原</h3>
+        <p style="font-size: 13px; color: #666; margin-bottom: 16px;"> Railway 重啟會清除資料，建議操作後立即備份。還原會覆蓋現有資料。</p>
+        <div class="btn-group">
+          <button class="btn btn-success" onclick="backupData()">全量備份 (JSON)</button>
+          <label class="btn btn-primary" style="cursor: pointer;">
+            還原備份
+            <input type="file" id="restoreFileInput" accept=".json" style="display:none" onchange="restoreData(this)">
+          </label>
+        </div>
+        <div id="restoreMsg" class="hidden mt-10"></div>
       </div>
     </div>
   </div>
@@ -542,6 +555,52 @@
       });
       alert('設定已儲存');
     });
+
+    // === Backup & Restore ===
+    function backupData() {
+      window.open('/api/admin/backup', '_blank');
+    }
+
+    async function restoreData(input) {
+      const file = input.files[0];
+      if (!file) return;
+
+      if (!confirm('還原會覆蓋所有現有資料，確定要繼續？')) {
+        input.value = '';
+        return;
+      }
+
+      const msgBox = document.getElementById('restoreMsg');
+      try {
+        const text = await file.text();
+        const backup = JSON.parse(text);
+
+        const res = await fetch('/api/admin/restore', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify(backup)
+        });
+
+        const data = await res.json();
+        msgBox.className = res.ok ? 'alert alert-success mt-10' : 'alert alert-error mt-10';
+        msgBox.textContent = data.message || data.error;
+        msgBox.classList.remove('hidden');
+
+        if (res.ok) {
+          loadClubs();
+          loadRegistrations();
+          loadPayments();
+        }
+      } catch (err) {
+        msgBox.className = 'alert alert-error mt-10';
+        msgBox.textContent = '還原失敗: ' + err.message;
+        msgBox.classList.remove('hidden');
+      }
+      input.value = '';
+    }
 
     // Init
     loadClubs();
