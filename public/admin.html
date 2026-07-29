@@ -331,7 +331,9 @@
                         ${p.status === 'pending' ? `
                           <button class="btn btn-sm btn-success" onclick="reviewPayment(${p.id}, 'approve')">確認</button>
                           <button class="btn btn-sm btn-danger" onclick="reviewPayment(${p.id}, 'reject')">駁回</button>
-                        ` : ''}
+                        ` : `
+                          <button class="btn btn-sm btn-secondary" onclick="resetPayment(${p.id})">重設</button>
+                        `}
                       </div>
                     </td>
                   </tr>
@@ -355,6 +357,16 @@
           'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({ action })
+      });
+      loadPayments();
+      loadRegistrations();
+    }
+
+    async function resetPayment(id) {
+      if (!confirm('確定重設為待審核？已繳費狀態將會被還原。')) return;
+      await fetch(`/api/payment/reset/${id}`, {
+        method: 'PUT',
+        headers: { 'Authorization': `Bearer ${token}` }
       });
       loadPayments();
       loadRegistrations();

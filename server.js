@@ -392,6 +392,23 @@ function startServer() {
     res.json({ message: action === 'approve' ? '已確認繳費' : '已駁回' });
   });
 
+  app.put('/api/payment/reset/:id', authMiddleware, adminMiddleware, async (req, res) => {
+    const proof = await getOne("SELECT * FROM payment_proofs WHERE id = ?", [req.params.id]);
+    if (!proof) return res.status(404).json({ error: '繳費證明不存在' });
+
+    await runQuery(
+      "UPDATE payment_proofs SET status = 'pending', reviewed_by = NULL, reviewed_at = NULL WHERE id = ?",
+      [req.params.id]
+    );
+
+    await runQuery(
+      "UPDATE registrations SET status = 'registered' WHERE club_id = ? AND status = 'paid'",
+      [proof.club_id]
+    );
+
+    res.json({ message: '已重設為待審核' });
+  });
+
   // Club management
   app.get('/api/admin/clubs', authMiddleware, adminMiddleware, async (req, res) => {
     const clubs = await getAll("SELECT club_id, club_name, is_admin FROM clubs ORDER BY club_id");
