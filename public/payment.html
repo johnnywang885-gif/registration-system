@@ -17,7 +17,7 @@
       <a href="/" id="navLogout" onclick="localStorage.clear()">登出</a>
       <a href="/register">報名</a>
       <a href="/payment" class="active">繳費證明</a>
-      <a href="/summary">公開統計</a>
+      <a href="/summary">目前報名統計</a>
     </div>
 
     <div class="card">
@@ -215,9 +215,9 @@
               }
               <div class="file-info">
                 <h4>${u.file_name || '繳費證明'}</h4>
-                <p>上傳時間：${new Date(u.uploaded_at).toLocaleString('zh-TW')}</p>
+                <p>上傳時間：${new Date(u.uploaded_at + 'Z').toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })}</p>
                 <p>狀態：${statusBadge(u.status)}</p>
-                ${u.reviewed_at ? `<p>審核時間：${new Date(u.reviewed_at).toLocaleString('zh-TW')}</p>` : ''}
+                ${u.reviewed_at ? `<p>審核時間：${new Date(u.reviewed_at + 'Z').toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })}</p>` : ''}
               </div>
             </div>
           `).join('');

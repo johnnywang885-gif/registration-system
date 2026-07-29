@@ -324,7 +324,7 @@
                         ${p.file_type === 'pdf' ? 'PDF 檔案' : '圖片'}
                       </a>
                     </td>
-                    <td>${new Date(p.uploaded_at).toLocaleString('zh-TW')}</td>
+                    <td>${new Date(p.uploaded_at + 'Z').toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })}</td>
                     <td>${paymentStatusBadge(p.status)}</td>
                     <td>
                       <div class="btn-group">
@@ -636,7 +636,7 @@
                     <td>${s.club_name}</td>
                     <td>${s.name}</td>
                     <td>${s.position || '-'}</td>
-                    <td>${new Date(s.created_at).toLocaleString('zh-TW')}</td>
+                    <td>${new Date(s.created_at + 'Z').toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })}</td>
                     <td><button class="btn btn-sm btn-primary" onclick="promoteOne(${s.id})">手動遞補</button></td>
                   </tr>
                 `).join('')}
