@@ -51,19 +51,6 @@ function startServer() {
     res.status(200).json({ status: 'ok' });
   });
 
-  // ===== Debug: Check env vars (remove after debugging) =====
-  app.get('/debug', (req, res) => {
-    const url = process.env.TURSO_DATABASE_URL;
-    const token = process.env.TURSO_AUTH_TOKEN;
-    res.json({
-      urlExists: !!url,
-      urlValue: url ? url.substring(0, 30) + '...' : null,
-      tokenExists: !!token,
-      tokenLength: token ? token.length : 0,
-      dbExists: !!require('./database').getDb()
-    });
-  });
-
   // ===== Public Routes =====
   app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
@@ -547,10 +534,7 @@ function startServer() {
   // ===== Init Database (non-blocking, in background) =====
   initDatabase()
     .then(() => console.log('Database ready'))
-    .catch(err => {
-      console.error('Database init FAILED:', err.message);
-      console.error('Full error:', JSON.stringify(err, Object.getOwnPropertyNames(err)));
-    });
+    .catch(err => console.error('Database init failed:', err.message));
 }
 
 startServer();

@@ -7,15 +7,11 @@ async function initDatabase() {
   const url = process.env.TURSO_DATABASE_URL;
   const authToken = process.env.TURSO_AUTH_TOKEN;
 
-  console.log('initDatabase: URL exists =', !!url, ', Token exists =', !!authToken);
-  if (url) console.log('initDatabase: URL =', url);
-
   if (!url) {
     throw new Error('TURSO_DATABASE_URL environment variable is required');
   }
 
   db = createClient({ url, authToken: authToken || undefined });
-  console.log('initDatabase: Client created, testing connection...');
 
   // Create tables
   await db.batch([
@@ -58,8 +54,6 @@ async function initDatabase() {
       value TEXT
     )`
   ], 'write');
-
-  console.log('initDatabase: Tables created, checking admin...');
 
   // Create default admin if not exists
   const adminCheck = await db.execute("SELECT COUNT(*) as cnt FROM clubs WHERE is_admin = 1");
