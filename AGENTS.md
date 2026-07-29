@@ -38,6 +38,21 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 - `saveDatabase()` is a no-op (kept for backward compat)
 - Tables: `clubs`, `registrations`, `payment_proofs`, `settings`
 
+### Registration Status Flow
+- `registered` → default status when a club member registers
+- `standby` → set automatically when club exceeds `guaranteed_quota` in Phase 1 (超額報名)
+- `paid` → set when admin approves payment proof
+- `forfeited` → set when admin marks as forfeited (棄權)
+- Status changes: `registered` ↔ `standby` ↔ `paid` ↔ `forfeited`
+
+### Phase System
+- Phase 1 registration deadline, Phase 2 after that
+- `settings.guaranteed_quota` (default 10) — per-club guaranteed spots
+- `settings.phase1_total_quota` (default 160) — total Phase 1 capacity
+- `POST /api/admin/promote` — auto-promote standby to registered (跨社遞補)
+- `GET /api/admin/standby-list` — list of unpromoted standby registrations
+- `POST /api/admin/promote/:id` — manual single-person promotion
+
 ### Auth (`auth.js`)
 - JWT middleware: `authMiddleware` for protected routes, `adminMiddleware` for admin-only
 - Tokens expire in 24h. Frontend stores in `localStorage`
@@ -50,7 +65,7 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 - `register.html` — registration form + card-based list
 - `payment.html` — payment proof upload
 - `summary.html` — public stats
-- `admin.html` — admin panel with tabs (registrations, payments, clubs, settings)
+- `admin.html` — admin panel with tabs (registrations, payments, clubs, settings, standby queue)
 - `css/style.css` — shared styles (warm earthy theme: `#f5f0eb` bg, `#c0714a` primary)
 
 ## Railway Deployment
@@ -78,19 +93,41 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 2. **500 on API routes + pages work**: DB not connected (env vars missing or init failed)
 3. **Healthcheck failure**: `app.listen()` not called before DB init
 4. **"Cannot read properties of undefined"**: Missing DB data (new Turso DB needs club import)
+5. **Health works but API 404**: Wrong service URL — the production URL includes a service suffix
 
 ## API Routes
 - `POST /api/login` — returns JWT token
-- `GET /api/summary` — public stats (no auth)
-- `POST /api/registrations` — create registration (auth required)
+- `GET /api/summary` — public stats (no auth): phase breakdown, guaranteed/standby counts
+- `POST /api/registrations` — create registration (auth required, auto-standby in Phase 1)
 - `GET /api/my-registrations` — list club's registrations (auth required)
-- `GET /api/admin/all` — all registrations (admin only)
+- `GET /api/admin/all` — all registrations with filters: club_id, phase, status (admin only)
+- `PUT /api/admin/payment/:id` — mark registration as paid (admin only)
+- `PUT /api/admin/forfeit/:id` — mark registration as forfeited (admin only)
+- `PUT /api/admin/reset-status/:id` — reset registration to registered (admin only)
+- `POST /api/admin/promote` — auto-promote standby registrations (admin only)
+- `GET /api/admin/standby-list` — list standby registrations (admin only)
+- `POST /api/admin/promote/:id` — manual promote single standby (admin only)
+- `PUT /api/payment/review/:id` — approve/reject payment proof (admin only)
+- `PUT /api/payment/reset/:id` — reset payment proof to pending (admin only)
 - `POST /api/admin/import-clubs` — bulk import clubs (admin only)
 - `POST /api/admin/import-excel` — import from XLSX (admin only)
 - `GET /api/admin/backup` — full backup as JSON (admin only)
 - `POST /api/admin/restore` — restore from JSON (admin only)
 - `GET /api/admin/export` — export as XLSX (admin only)
 - `GET /health` — health check (no auth)
+
+## Key Gotchas
+
+### Timezone
+- Turso `CURRENT_TIMESTAMP` stores UTC
+- Frontend must use `new Date(value + 'Z').toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })` to display correct Taiwan time
+
+### Payment Approval Bulk Effect
+- When admin approves a payment proof, ALL `status='registered'` registrations for that club are updated to `paid` (not just one)
+- Club payments cover all members at once
+
+### Registration Sorting
+- Summary page sorts clubs by earliest registration time first (ASC), no-registration clubs last
 
 ## File Structure
 ```
@@ -99,7 +136,6 @@ database.js      — Turso cloud operations (@libsql/client), db starts as null
 auth.js          — JWT auth middleware
 public/          — Frontend HTML files
 public/css/      — Shared styles (warm earthy theme)
-public/js/       — Frontend JS (if any)
 uploads/         — Payment proof files (gitignored)
 railway.json     — Railway deploy config (Nixpacks builder)
 ```
