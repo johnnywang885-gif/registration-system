@@ -15,7 +15,7 @@
 
     <div class="nav">
       <a href="/" id="navLogout" onclick="localStorage.clear()">登出</a>
-      <a href="/summary">公開統計</a>
+      <a href="/summary">目前報名統計</a>
       <a href="/admin" class="active admin-link">管理後台</a>
     </div>
 
@@ -25,6 +25,7 @@
         <div class="tab" data-tab="payments">繳費審核</div>
         <div class="tab" data-tab="clubs">社團管理</div>
         <div class="tab" data-tab="settings">系統設定</div>
+        <div class="tab" data-tab="standby">遞補順序</div>
       </div>
 
       <!-- 報名管理 -->
@@ -47,6 +48,7 @@
             <select id="filterStatus">
               <option value="">全部</option>
               <option value="registered">已報名</option>
+              <option value="standby">候補</option>
               <option value="paid">已繳費</option>
               <option value="forfeited">棄權</option>
             </select>
@@ -106,14 +108,24 @@
               <input type="number" id="settingQuota" min="1">
             </div>
           </div>
-          <div class="form-group">
-            <label>目前階段</label>
-            <select id="settingCurrentPhase">
-              <option value="1">第一階段</option>
-              <option value="2">第二階段</option>
-            </select>
+          <div class="form-row">
+            <div class="form-group">
+              <label>第一階段總名額</label>
+              <input type="number" id="settingPhase1Quota" min="1">
+            </div>
+            <div class="form-group">
+              <label>目前階段</label>
+              <select id="settingCurrentPhase">
+                <option value="1">第一階段</option>
+                <option value="2">第二階段</option>
+              </select>
+            </div>
           </div>
-          <button type="submit" class="btn btn-primary">儲存設定</button>
+          <div class="btn-group">
+            <button type="submit" class="btn btn-primary">儲存設定</button>
+            <button type="button" class="btn btn-success" id="btnPromote" onclick="runPromote()">執行遞補</button>
+            <span id="promoteResult" style="margin-left:12px; font-size:13px; color:#4a3728;"></span>
+          </div>
         </form>
 
         <hr style="margin: 30px 0; border: 1px solid #e0e0e0;">
@@ -128,6 +140,15 @@
           </label>
         </div>
         <div id="restoreMsg" class="hidden mt-10"></div>
+      </div>
+
+      <!-- 遞補順序 -->
+      <div class="tab-content" id="tab-standby">
+        <h3 style="font-size:15px; color:#4a3728; margin-bottom:12px;">第一階段候補遞補順序</h3>
+        <div class="loading hidden" id="loadingStandby">
+          <div class="spinner"></div>
+        </div>
+        <div id="standbyTable"></div>
       </div>
     </div>
   </div>
@@ -158,6 +179,9 @@
         document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
         tab.classList.add('active');
         document.getElementById(`tab-${tab.dataset.tab}`).classList.add('active');
+        if (tab.dataset.tab === 'standby') {
+          loadStandbyList();
+        }
       });
     });
 
@@ -166,7 +190,7 @@
     }
 
     function statusBadge(status) {
-      const map = { registered: '已報名', paid: '已繳費', forfeited: '棄權' };
+      const map = { registered: '已報名', paid: '已繳費', forfeited: '棄權', standby: '候補' };
       return `<span class="badge badge-${status}">${map[status] || status}</span>`;
     }
 
@@ -529,6 +553,7 @@
         document.getElementById('settingPayment').value = data.payment_deadline || '';
         document.getElementById('settingPhase2').value = data.phase2_deadline || '';
         document.getElementById('settingQuota').value = data.guaranteed_quota || 10;
+        document.getElementById('settingPhase1Quota').value = data.phase1_total_quota || 160;
         document.getElementById('settingCurrentPhase').value = data.current_phase || '1';
       } catch (err) {
         console.error(err);
@@ -542,6 +567,7 @@
         payment_deadline: document.getElementById('settingPayment').value,
         phase2_deadline: document.getElementById('settingPhase2').value,
         guaranteed_quota: document.getElementById('settingQuota').value,
+        phase1_total_quota: document.getElementById('settingPhase1Quota').value,
         current_phase: document.getElementById('settingCurrentPhase').value
       };
 
@@ -555,6 +581,90 @@
       });
       alert('設定已儲存');
     });
+
+    // === Promotion ===
+    async function runPromote() {
+      const btn = document.getElementById('btnPromote');
+      const result = document.getElementById('promoteResult');
+      btn.disabled = true;
+      btn.textContent = '執行中...';
+      result.textContent = '';
+      try {
+        const res = await fetch('/api/admin/promote', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        const data = await res.json();
+        result.textContent = data.message;
+      } catch (err) {
+        result.textContent = '遞補失敗';
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '執行遞補';
+      }
+    }
+
+    async function loadStandbyList() {
+      document.getElementById('loadingStandby').classList.remove('hidden');
+      try {
+        const res = await fetch('/api/admin/standby-list', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        const list = await res.json();
+        const container = document.getElementById('standbyTable');
+        if (list.length === 0) {
+          container.innerHTML = '<div style="text-align:center; padding:20px; color:#999;">目前無候補人員</div>';
+        } else {
+          container.innerHTML = `
+            <table>
+              <thead>
+                <tr>
+                  <th>序號</th>
+                  <th>社號</th>
+                  <th>社名</th>
+                  <th>姓名</th>
+                  <th>職稱</th>
+                  <th>登記時間</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${list.map((s, i) => `
+                  <tr>
+                    <td>${i + 1}</td>
+                    <td>${s.club_id}</td>
+                    <td>${s.club_name}</td>
+                    <td>${s.name}</td>
+                    <td>${s.position || '-'}</td>
+                    <td>${new Date(s.created_at).toLocaleString('zh-TW')}</td>
+                    <td><button class="btn btn-sm btn-primary" onclick="promoteOne(${s.id})">手動遞補</button></td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          `;
+        }
+      } catch (err) {
+        console.error(err);
+      } finally {
+        document.getElementById('loadingStandby').classList.add('hidden');
+      }
+    }
+
+    async function promoteOne(id) {
+      if (!confirm('確定遞補此人？')) return;
+      try {
+        const res = await fetch(`/api/admin/promote/${id}`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        const data = await res.json();
+        alert(data.message || data.error);
+        loadStandbyList();
+      } catch (err) {
+        alert('操作失敗');
+      }
+    }
 
     // === Backup & Restore ===
     function backupData() {

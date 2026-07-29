@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>報名系統 - 公開統計</title>
+  <title>報名系統 - 目前報名統計</title>
   <link rel="stylesheet" href="/css/style.css">
 </head>
 <body>
@@ -15,7 +15,7 @@
 
     <div class="nav">
       <a href="/">登入</a>
-      <a href="/summary" class="active">公開統計</a>
+      <a href="/summary" class="active">目前報名統計</a>
     </div>
 
     <div class="stats-grid">
@@ -44,7 +44,8 @@
           <tr>
             <th>社號</th>
             <th>社名</th>
-            <th>報名人數</th>
+            <th>第一階段</th>
+            <th>第二階段</th>
             <th>最後登錄時間</th>
           </tr>
         </thead>
@@ -68,13 +69,14 @@
 
         const tbody = document.getElementById('summaryBody');
         if (data.summary.length === 0) {
-          tbody.innerHTML = '<tr><td colspan="4" class="text-center" style="padding: 20px; color: #999;">尚無報名資料</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="5" class="text-center" style="padding: 20px; color: #999;">尚無報名資料</td></tr>';
         } else {
           tbody.innerHTML = data.summary.map(s => `
             <tr>
               <td>${s.club_id}</td>
               <td>${s.club_name}</td>
-              <td><strong>${s.total_count}</strong></td>
+              <td><strong>${s.phase1_total}</strong> <span style="font-size:12px; color:#8d7b6b;">(保障${s.phase1_registered}/候補${s.phase1_standby})</span></td>
+              <td><strong>${s.phase2_count}</strong></td>
               <td>${s.last_register_time ? new Date(s.last_register_time).toLocaleString('zh-TW') : '-'}</td>
             </tr>
           `).join('');

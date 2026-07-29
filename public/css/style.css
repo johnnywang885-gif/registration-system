@@ -301,6 +301,11 @@ table tr:hover {
   color: #b85c4f;
 }
 
+.badge-standby {
+  background: #fef9e6;
+  color: #b8a04f;
+}
+
 /* ==================== Alerts ==================== */
 .alert {
   padding: 12px 16px;

@@ -157,7 +157,7 @@
       <a href="/" id="navLogout" onclick="localStorage.clear()">登出</a>
       <a href="/register" class="active">報名</a>
       <a href="/payment">繳費證明</a>
-      <a href="/summary">公開統計</a>
+      <a href="/summary">目前報名統計</a>
     </div>
 
     <div class="card reg-form-card">
@@ -168,7 +168,13 @@
         <div class="form-row">
           <div class="form-group">
             <label>職稱</label>
-            <input type="text" id="position" placeholder="如：社長、會計">
+            <select id="position">
+              <option value="">請選擇</option>
+              <option value="理事">理事</option>
+              <option value="監事">監事</option>
+              <option value="聘任幹部">聘任幹部</option>
+              <option value="眷屬">眷屬</option>
+            </select>
           </div>
           <div class="form-group">
             <label>姓名 *</label>
@@ -245,7 +251,7 @@
     }
 
     function statusBadge(status) {
-      const map = { registered: '已報名', paid: '已繳費', forfeited: '棄權' };
+      const map = { registered: '已報名', paid: '已繳費', forfeited: '棄權', standby: '候補' };
       return `<span class="badge badge-${status}">${map[status] || status}</span>`;
     }
 
@@ -358,7 +364,7 @@
         const data = await res.json();
         if (!res.ok) { showAlert(data.error, 'error'); return; }
 
-        showAlert(editingId ? '更新成功' : '報名成功');
+        showAlert(editingId ? '更新成功' : (data.message || '報名成功'));
         cancelEdit();
         loadRegistrations();
       } catch (err) {

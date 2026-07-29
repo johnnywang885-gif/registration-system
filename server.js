@@ -128,14 +128,20 @@ function startServer() {
 
       const summary = await getAll(`
         SELECT c.club_id, c.club_name,
-          COUNT(r.id) as total_count,
+          COUNT(CASE WHEN r.phase = 1 AND r.status = 'registered' THEN 1 END) as phase1_registered,
+          COUNT(CASE WHEN r.phase = 1 AND r.status = 'standby' THEN 1 END) as phase1_standby,
+          COUNT(CASE WHEN r.phase = 2 AND r.status != 'forfeited' THEN 1 END) as phase2_count,
           MAX(r.created_at) as last_register_time
         FROM clubs c
         LEFT JOIN registrations r ON c.club_id = r.club_id AND r.status != 'forfeited'
         WHERE c.is_admin = 0
         GROUP BY c.club_id, c.club_name
-        ORDER BY c.club_id
+        ORDER BY last_register_time DESC, c.club_id
       `);
+
+      summary.forEach(s => {
+        s.phase1_total = s.phase1_registered + s.phase1_standby;
+      });
 
       const phase1Total = await getOne("SELECT COUNT(*) as cnt FROM registrations WHERE phase = 1 AND status != 'forfeited'");
       const phase2Total = await getOne("SELECT COUNT(*) as cnt FROM registrations WHERE phase = 2 AND status != 'forfeited'");
@@ -176,12 +182,24 @@ function startServer() {
     const { position, name, id_card, birthday, phone, meal_type } = req.body;
     if (!name) return res.status(400).json({ error: '請輸入姓名' });
 
+    let newStatus = 'registered';
+    if (currentPhase === 1) {
+      const phase1Count = await getOne(
+        "SELECT COUNT(*) as cnt FROM registrations WHERE club_id = ? AND phase = 1 AND status != 'forfeited'",
+        [req.user.clubId]
+      );
+      const guaranteedQuota = parseInt(settings.guaranteed_quota || '10');
+      if (phase1Count.cnt >= guaranteedQuota) {
+        newStatus = 'standby';
+      }
+    }
+
     const id = await insert(
-      "INSERT INTO registrations (club_id, position, name, id_card, birthday, phone, meal_type, phase) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-      [req.user.clubId, position || '', name, id_card || '', birthday || '', phone || '', meal_type || '', currentPhase]
+      "INSERT INTO registrations (club_id, position, name, id_card, birthday, phone, meal_type, phase, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [req.user.clubId, position || '', name, id_card || '', birthday || '', phone || '', meal_type || '', currentPhase, newStatus]
     );
 
-    res.json({ id, message: '報名成功' });
+    res.json({ id, message: newStatus === 'standby' ? '報名成功（候補）' : '報名成功' });
   });
 
   app.put('/api/registrations/:id', authMiddleware, async (req, res) => {
@@ -261,6 +279,85 @@ function startServer() {
   app.put('/api/admin/reset-status/:id', authMiddleware, adminMiddleware, async (req, res) => {
     await runQuery("UPDATE registrations SET status = 'registered' WHERE id = ?", [req.params.id]);
     res.json({ message: '已重設狀態' });
+  });
+
+  // Promotion (standby -> registered)
+  app.post('/api/admin/promote', authMiddleware, adminMiddleware, async (req, res) => {
+    try {
+      const settingsRows = await getAll("SELECT key, value FROM settings");
+      const settings = {};
+      settingsRows.forEach(s => { settings[s.key] = s.value; });
+
+      const currentPhase = parseInt(settings.current_phase || '1');
+      if (currentPhase !== 1) {
+        return res.json({ message: '非第一階段期間，無法執行遞補', promoted: 0 });
+      }
+
+      const phase1TotalQuota = parseInt(settings.phase1_total_quota || '160');
+
+      const currentTotal = await getOne(
+        "SELECT COUNT(*) as cnt FROM registrations WHERE phase = 1 AND status IN ('registered', 'standby')"
+      );
+      const availableSpots = phase1TotalQuota - (currentTotal?.cnt || 0);
+
+      if (availableSpots <= 0) {
+        return res.json({ message: '第一階段已額滿，無需遞補', promoted: 0 });
+      }
+
+      const standbyList = await getAll(
+        "SELECT id FROM registrations WHERE phase = 1 AND status = 'standby' ORDER BY created_at ASC"
+      );
+      const toPromote = standbyList.slice(0, availableSpots);
+
+      if (toPromote.length === 0) {
+        return res.json({ message: '無候補人員需遞補', promoted: 0 });
+      }
+
+      const stmts = toPromote.map(r => ({
+        sql: "UPDATE registrations SET status = 'registered' WHERE id = ?",
+        args: [r.id]
+      }));
+      const { getDb } = require('./database');
+      await getDb().batch(stmts, 'write');
+
+      res.json({ message: `已遞補 ${toPromote.length} 人`, promoted: toPromote.length });
+    } catch (err) {
+      console.error('Promote error:', err.message);
+      res.status(500).json({ error: '遞補失敗: ' + err.message });
+    }
+  });
+
+  app.get('/api/admin/standby-list', authMiddleware, adminMiddleware, async (req, res) => {
+    try {
+      const list = await getAll(`
+        SELECT r.id, r.club_id, c.club_name, r.name, r.position, r.created_at
+        FROM registrations r
+        JOIN clubs c ON r.club_id = c.club_id
+        WHERE r.phase = 1 AND r.status = 'standby'
+        ORDER BY r.created_at ASC
+      `);
+      res.json(list);
+    } catch (err) {
+      console.error('Standby list error:', err.message);
+      res.status(500).json({ error: '載入失敗' });
+    }
+  });
+
+  app.post('/api/admin/promote/:id', authMiddleware, adminMiddleware, async (req, res) => {
+    try {
+      const reg = await getOne(
+        "SELECT * FROM registrations WHERE id = ? AND phase = 1 AND status = 'standby'",
+        [req.params.id]
+      );
+      if (!reg) {
+        return res.status(404).json({ error: '找不到該候補人員或已遞補' });
+      }
+      await runQuery("UPDATE registrations SET status = 'registered' WHERE id = ?", [req.params.id]);
+      res.json({ message: `已手動遞補 ${reg.name}（${reg.club_id}）` });
+    } catch (err) {
+      console.error('Manual promote error:', err.message);
+      res.status(500).json({ error: '遞補失敗' });
+    }
   });
 
   // Payment proof review

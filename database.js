@@ -75,6 +75,7 @@ async function initDatabase() {
       ['payment_deadline', '2025-09-30'],
       ['phase2_deadline', '2025-10-20'],
       ['guaranteed_quota', '10'],
+      ['phase1_total_quota', '160'],
       ['current_phase', '1']
     ];
     const stmts = defaultSettings.map(([key, value]) => ({
