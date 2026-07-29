@@ -136,7 +136,7 @@ function startServer() {
         LEFT JOIN registrations r ON c.club_id = r.club_id AND r.status != 'forfeited'
         WHERE c.is_admin = 0
         GROUP BY c.club_id, c.club_name
-        ORDER BY last_register_time DESC, c.club_id
+        ORDER BY last_register_time IS NULL, last_register_time ASC, c.club_id
       `);
 
       summary.forEach(s => {
