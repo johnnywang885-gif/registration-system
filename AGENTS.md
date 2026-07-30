@@ -104,7 +104,7 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 - `PUT /api/admin/payment/:id` — mark registration as paid (admin only)
 - `PUT /api/admin/forfeit/:id` — mark registration as forfeited (admin only)
 - `PUT /api/admin/reset-status/:id` — reset registration to registered (admin only)
-- `POST /api/admin/promote` — auto-promote standby registrations (admin only)
+- `POST /api/admin/promote` — auto-promote standby registrations, works in any phase (admin only)
 - `GET /api/admin/standby-list` — list standby registrations (admin only)
 - `POST /api/admin/promote/:id` — manual promote single standby (admin only)
 - `PUT /api/payment/review/:id` — approve/reject payment proof (admin only)

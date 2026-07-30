@@ -90,7 +90,8 @@
 
     loadSummary();
 
-    setInterval(loadSummary, 30000);
+    const summaryInterval = setInterval(loadSummary, 30000);
+    window.addEventListener('beforeunload', () => clearInterval(summaryInterval));
   </script>
 </body>
 </html>

@@ -1,18 +1,16 @@
 require('dotenv').config();
 const express = require('express');
-const cors = require('cors');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const bcrypt = require('bcryptjs');
 const XLSX = require('xlsx');
-const { initDatabase, getAll, getOne, runQuery, insert, importClubs, saveDatabase } = require('./database');
+const { initDatabase, getAll, getOne, runQuery, insert, importClubs, saveDatabase, getDb } = require('./database');
 const { generateToken, authMiddleware, adminMiddleware } = require('./auth');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
@@ -114,9 +112,14 @@ function startServer() {
   });
 
   app.get('/api/me', authMiddleware, async (req, res) => {
-    const club = await getOne("SELECT club_id, club_name, is_admin FROM clubs WHERE club_id = ?", [req.user.clubId]);
-    if (!club) return res.status(404).json({ error: '社團不存在' });
-    res.json(club);
+    try {
+      const club = await getOne("SELECT club_id, club_name, is_admin FROM clubs WHERE club_id = ?", [req.user.clubId]);
+      if (!club) return res.status(404).json({ error: '社團不存在' });
+      res.json(club);
+    } catch (err) {
+      console.error('Me error:', err.message);
+      res.status(500).json({ error: '資料庫尚未就緒，請稍後再試' });
+    }
   });
 
   // ===== Summary API (Public) =====
@@ -160,67 +163,87 @@ function startServer() {
 
   // ===== Registration API =====
   app.get('/api/my-registrations', authMiddleware, async (req, res) => {
-    const registrations = await getAll(
-      "SELECT * FROM registrations WHERE club_id = ? ORDER BY created_at DESC",
-      [req.user.clubId]
-    );
-    const club = await getOne("SELECT club_id, club_name FROM clubs WHERE club_id = ?", [req.user.clubId]);
-    const count = await getOne("SELECT COUNT(*) as cnt FROM registrations WHERE club_id = ? AND status != 'forfeited'", [req.user.clubId]);
-    res.json({
-      club,
-      registrations,
-      count: count?.cnt || 0
-    });
+    try {
+      const registrations = await getAll(
+        "SELECT * FROM registrations WHERE club_id = ? ORDER BY created_at DESC",
+        [req.user.clubId]
+      );
+      const club = await getOne("SELECT club_id, club_name FROM clubs WHERE club_id = ?", [req.user.clubId]);
+      const count = await getOne("SELECT COUNT(*) as cnt FROM registrations WHERE club_id = ? AND status != 'forfeited'", [req.user.clubId]);
+      res.json({
+        club,
+        registrations,
+        count: count?.cnt || 0
+      });
+    } catch (err) {
+      console.error('My registrations error:', err.message);
+      res.status(500).json({ error: '資料庫尚未就緒，請稍後再試' });
+    }
   });
 
   app.post('/api/registrations', authMiddleware, async (req, res) => {
-    const settingsRows = await getAll("SELECT key, value FROM settings");
-    const settings = {};
-    settingsRows.forEach(s => { settings[s.key] = s.value; });
-    const currentPhase = parseInt(settings.current_phase || '1');
+    try {
+      const settingsRows = await getAll("SELECT key, value FROM settings");
+      const settings = {};
+      settingsRows.forEach(s => { settings[s.key] = s.value; });
+      const currentPhase = parseInt(settings.current_phase || '1');
 
-    const { position, name, id_card, birthday, phone, meal_type } = req.body;
-    if (!name) return res.status(400).json({ error: '請輸入姓名' });
+      const { position, name, id_card, birthday, phone, meal_type } = req.body;
+      if (!name) return res.status(400).json({ error: '請輸入姓名' });
 
-    let newStatus = 'registered';
-    if (currentPhase === 1) {
-      const phase1Count = await getOne(
-        "SELECT COUNT(*) as cnt FROM registrations WHERE club_id = ? AND phase = 1 AND status != 'forfeited'",
-        [req.user.clubId]
-      );
-      const guaranteedQuota = parseInt(settings.guaranteed_quota || '10');
-      if (phase1Count.cnt >= guaranteedQuota) {
-        newStatus = 'standby';
+      let newStatus = 'registered';
+      if (currentPhase === 1) {
+        const phase1Count = await getOne(
+          "SELECT COUNT(*) as cnt FROM registrations WHERE club_id = ? AND phase = 1 AND status != 'forfeited'",
+          [req.user.clubId]
+        );
+        const guaranteedQuota = parseInt(settings.guaranteed_quota || '10');
+        if (phase1Count.cnt >= guaranteedQuota) {
+          newStatus = 'standby';
+        }
       }
+
+      const id = await insert(
+        "INSERT INTO registrations (club_id, position, name, id_card, birthday, phone, meal_type, phase, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [req.user.clubId, position || '', name, id_card || '', birthday || '', phone || '', meal_type || '', currentPhase, newStatus]
+      );
+
+      res.json({ id, message: newStatus === 'standby' ? '報名成功（候補）' : '報名成功' });
+    } catch (err) {
+      console.error('Registration error:', err.message);
+      res.status(500).json({ error: '資料庫尚未就緒，請稍後再試' });
     }
-
-    const id = await insert(
-      "INSERT INTO registrations (club_id, position, name, id_card, birthday, phone, meal_type, phase, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      [req.user.clubId, position || '', name, id_card || '', birthday || '', phone || '', meal_type || '', currentPhase, newStatus]
-    );
-
-    res.json({ id, message: newStatus === 'standby' ? '報名成功（候補）' : '報名成功' });
   });
 
   app.put('/api/registrations/:id', authMiddleware, async (req, res) => {
-    const reg = await getOne("SELECT * FROM registrations WHERE id = ? AND club_id = ?", [req.params.id, req.user.clubId]);
-    if (!reg) return res.status(404).json({ error: '報名資料不存在' });
+    try {
+      const reg = await getOne("SELECT * FROM registrations WHERE id = ? AND club_id = ?", [req.params.id, req.user.clubId]);
+      if (!reg) return res.status(404).json({ error: '報名資料不存在' });
 
-    const { position, name, id_card, birthday, phone, meal_type } = req.body;
-    await runQuery(
-      "UPDATE registrations SET position = ?, name = ?, id_card = ?, birthday = ?, phone = ?, meal_type = ? WHERE id = ? AND club_id = ?",
-      [position || '', name, id_card || '', birthday || '', phone || '', meal_type || '', req.params.id, req.user.clubId]
-    );
+      const { position, name, id_card, birthday, phone, meal_type } = req.body;
+      await runQuery(
+        "UPDATE registrations SET position = ?, name = ?, id_card = ?, birthday = ?, phone = ?, meal_type = ? WHERE id = ? AND club_id = ?",
+        [position || '', name, id_card || '', birthday || '', phone || '', meal_type || '', req.params.id, req.user.clubId]
+      );
 
-    res.json({ message: '更新成功' });
+      res.json({ message: '更新成功' });
+    } catch (err) {
+      console.error('Update registration error:', err.message);
+      res.status(500).json({ error: '資料庫尚未就緒，請稍後再試' });
+    }
   });
 
   app.delete('/api/registrations/:id', authMiddleware, async (req, res) => {
-    const reg = await getOne("SELECT * FROM registrations WHERE id = ? AND club_id = ?", [req.params.id, req.user.clubId]);
-    if (!reg) return res.status(404).json({ error: '報名資料不存在' });
+    try {
+      const reg = await getOne("SELECT * FROM registrations WHERE id = ? AND club_id = ?", [req.params.id, req.user.clubId]);
+      if (!reg) return res.status(404).json({ error: '報名資料不存在' });
 
-    await runQuery("DELETE FROM registrations WHERE id = ? AND club_id = ?", [req.params.id, req.user.clubId]);
-    res.json({ message: '刪除成功' });
+      await runQuery("DELETE FROM registrations WHERE id = ? AND club_id = ?", [req.params.id, req.user.clubId]);
+      res.json({ message: '刪除成功' });
+    } catch (err) {
+      console.error('Delete registration error:', err.message);
+      res.status(500).json({ error: '資料庫尚未就緒，請稍後再試' });
+    }
   });
 
   // ===== Payment Proof API =====
@@ -267,18 +290,33 @@ function startServer() {
   });
 
   app.put('/api/admin/payment/:id', authMiddleware, adminMiddleware, async (req, res) => {
-    await runQuery("UPDATE registrations SET status = 'paid' WHERE id = ?", [req.params.id]);
-    res.json({ message: '已標記為已繳費' });
+    try {
+      await runQuery("UPDATE registrations SET status = 'paid' WHERE id = ?", [req.params.id]);
+      res.json({ message: '已標記為已繳費' });
+    } catch (err) {
+      console.error('Mark paid error:', err.message);
+      res.status(500).json({ error: '資料庫尚未就緒，請稍後再試' });
+    }
   });
 
   app.put('/api/admin/forfeit/:id', authMiddleware, adminMiddleware, async (req, res) => {
-    await runQuery("UPDATE registrations SET status = 'forfeited' WHERE id = ?", [req.params.id]);
-    res.json({ message: '已標記為棄權' });
+    try {
+      await runQuery("UPDATE registrations SET status = 'forfeited' WHERE id = ?", [req.params.id]);
+      res.json({ message: '已標記為棄權' });
+    } catch (err) {
+      console.error('Forfeit error:', err.message);
+      res.status(500).json({ error: '資料庫尚未就緒，請稍後再試' });
+    }
   });
 
   app.put('/api/admin/reset-status/:id', authMiddleware, adminMiddleware, async (req, res) => {
-    await runQuery("UPDATE registrations SET status = 'registered' WHERE id = ?", [req.params.id]);
-    res.json({ message: '已重設狀態' });
+    try {
+      await runQuery("UPDATE registrations SET status = 'registered' WHERE id = ?", [req.params.id]);
+      res.json({ message: '已重設狀態' });
+    } catch (err) {
+      console.error('Reset status error:', err.message);
+      res.status(500).json({ error: '資料庫尚未就緒，請稍後再試' });
+    }
   });
 
   // Promotion (standby -> registered)
@@ -287,11 +325,6 @@ function startServer() {
       const settingsRows = await getAll("SELECT key, value FROM settings");
       const settings = {};
       settingsRows.forEach(s => { settings[s.key] = s.value; });
-
-      const currentPhase = parseInt(settings.current_phase || '1');
-      if (currentPhase !== 1) {
-        return res.json({ message: '非第一階段期間，無法執行遞補', promoted: 0 });
-      }
 
       const phase1TotalQuota = parseInt(settings.phase1_total_quota || '160');
 
@@ -317,7 +350,6 @@ function startServer() {
         sql: "UPDATE registrations SET status = 'registered' WHERE id = ?",
         args: [r.id]
       }));
-      const { getDb } = require('./database');
       await getDb().batch(stmts, 'write');
 
       res.json({ message: `已遞補 ${toPromote.length} 人`, promoted: toPromote.length });
@@ -379,13 +411,19 @@ function startServer() {
       [newStatus, req.user.clubId.toString(), req.params.id]
     );
 
+    const proof = await getOne("SELECT * FROM payment_proofs WHERE id = ?", [req.params.id]);
+
     if (action === 'approve') {
-      const proof = await getOne("SELECT * FROM payment_proofs WHERE id = ?", [req.params.id]);
       if (proof) {
         await runQuery(
           "UPDATE registrations SET status = 'paid' WHERE club_id = ? AND status = 'registered'",
           [proof.club_id]
         );
+      }
+    } else if (action === 'reject') {
+      if (proof && proof.file_path) {
+        const filePath = path.join(__dirname, proof.file_path.replace(/^\//, ''));
+        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
       }
     }
 
@@ -402,8 +440,8 @@ function startServer() {
     );
 
     await runQuery(
-      "UPDATE registrations SET status = 'registered' WHERE club_id = ? AND status = 'paid'",
-      [proof.club_id]
+      "UPDATE registrations SET status = 'registered' WHERE club_id = ? AND status = 'paid' AND created_at <= ?",
+      [proof.club_id, proof.uploaded_at]
     );
 
     res.json({ message: '已重設為待審核' });
@@ -459,7 +497,18 @@ function startServer() {
 
     try {
       const workbook = XLSX.readFile(req.file.path);
-      const sheetName = workbook.SheetNames.find(n => n.includes('社號社名')) || workbook.SheetNames[1];
+      let sheetName = workbook.SheetNames.find(n => n.includes('社號社名'));
+      if (!sheetName) {
+        for (const name of workbook.SheetNames) {
+          const sheet = workbook.Sheets[name];
+          const json = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+          if (json.length > 0 && json[0].includes('社號')) {
+            sheetName = name;
+            break;
+          }
+        }
+      }
+      if (!sheetName) sheetName = workbook.SheetNames[0];
       const sheet = workbook.Sheets[sheetName];
       const data = XLSX.utils.sheet_to_json(sheet);
 
@@ -492,7 +541,6 @@ function startServer() {
       sql: "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
       args: [key, String(value)]
     }));
-    const { getDb } = require('./database');
     await getDb().batch(stmts, 'write');
     res.json({ message: '設定已更新' });
   });
@@ -527,7 +575,6 @@ function startServer() {
     }
 
     try {
-      const { getDb } = require('./database');
       const dbConn = getDb();
 
       // Clear existing data

@@ -4,3 +4,4 @@ uploads/payments/*
 !uploads/payments/.gitkeep
 .env
 *.log
+test/*.db

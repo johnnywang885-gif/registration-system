@@ -31,9 +31,10 @@ npm start
 2. 前往 [Railway](https://railway.app) 註冊帳號
 3. 點擊 "New Project" → "Deploy from GitHub repo"
 4. 選擇此 repo
-5. 在 Settings → Variables 添加：
-   - `JWT_SECRET`: 任意隨機字串
-   - `PORT`: 3000
+5. 在 Railway Dashboard → Variables 添加以下環境變數：
+   - `TURSO_DATABASE_URL`: Turso 資料庫 URL（`libsql://...` 格式）
+   - `TURSO_AUTH_TOKEN`: Turso 資料庫 token（`turso db tokens create` 產生）
+   - `JWT_SECRET`: 任意隨機字串（選填，未設定使用預設值）
 6. Railway 會自動部署
 
 ## 檔案結構
@@ -44,7 +45,7 @@ npm start
 ├── auth.js             # JWT 認證
 ├── public/             # 前端頁面
 ├── uploads/            # 繳費證明存放
-├── data/               # SQLite 資料庫
+
 └── railway.json        # Railway 部署設定
 ```
 
