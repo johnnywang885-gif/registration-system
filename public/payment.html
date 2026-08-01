@@ -58,6 +58,12 @@
 
     let selectedFile = null;
 
+    function esc(value) {
+      return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[ch]));
+    }
+
     function showAlert(msg, type = 'success') {
       const box = document.getElementById('alertBox');
       box.className = `alert alert-${type}`;
@@ -210,22 +216,52 @@
           list.innerHTML = uploads.map(u => `
             <div class="upload-item">
               ${u.file_type === 'pdf'
-                ? '<div class="file-icon" style="width:60px;height:60px;display:flex;align-items:center;justify-content:center;background:#f8d7da;border-radius:6px;font-size:20px;">PDF</div>'
-                : `<img src="${u.file_path}" alt="繳費證明">`
+                ? `<button class="btn btn-sm btn-secondary" onclick="viewUploadProof(${u.id})">檢視 PDF</button>`
+                : `<img data-proof-id="${u.id}" src="" alt="繳費證明" style="display:none;">`
               }
               <div class="file-info">
-                <h4>${u.file_name || '繳費證明'}</h4>
+                <h4>${esc(u.file_name || '繳費證明')}</h4>
                 <p>上傳時間：${new Date(u.uploaded_at + 'Z').toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })}</p>
                 <p>狀態：${statusBadge(u.status)}</p>
                 ${u.reviewed_at ? `<p>審核時間：${new Date(u.reviewed_at + 'Z').toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })}</p>` : ''}
               </div>
             </div>
           `).join('');
+          list.querySelectorAll('img[data-proof-id]').forEach(img => {
+            loadProofImage(img, Number(img.dataset.proofId));
+          });
         }
       } catch (err) {
         console.error(err);
       } finally {
         document.getElementById('loadingList').classList.add('hidden');
+      }
+    }
+
+    async function loadProofImage(imgEl, id) {
+      try {
+        const res = await fetch(`/api/payment/file/${id}`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (!res.ok) return;
+        const blob = await res.blob();
+        imgEl.src = URL.createObjectURL(blob);
+        imgEl.style.display = '';
+      } catch (err) {
+        console.error(err);
+      }
+    }
+
+    async function viewUploadProof(id) {
+      try {
+        const res = await fetch(`/api/payment/file/${id}`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (!res.ok) { showAlert('無法載入檔案', 'error'); return; }
+        const blob = await res.blob();
+        window.open(URL.createObjectURL(blob), '_blank');
+      } catch (err) {
+        showAlert('載入檔案失敗', 'error');
       }
     }
 

@@ -75,7 +75,7 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 |-----|----------|-------|
 | `TURSO_DATABASE_URL` | Yes | `libsql://...` format |
 | `TURSO_AUTH_TOKEN` | Yes | JWT from `turso db tokens create` |
-| `JWT_SECRET` | No | Falls back to hardcoded default |
+| `JWT_SECRET` | No (建議設定) | Falls back to random ephemeral key — 重啟後所有登入失效；若不設定會印出警告 |
 | `PORT` | No | Set automatically by Railway |
 
 **Railway API gotcha**: `variableUpsert` mutation MUST include `serviceId` param, otherwise the variable is set at project level but not exposed to the running service. Query `services` to get the service ID first.
@@ -109,6 +109,7 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 - `POST /api/admin/promote/:id` — manual promote single standby (admin only)
 - `PUT /api/payment/review/:id` — approve/reject payment proof (admin only)
 - `PUT /api/payment/reset/:id` — reset payment proof to pending (admin only)
+- `GET /api/payment/file/:id` — view payment proof file (auth required: admin or owning club)
 - `POST /api/admin/import-clubs` — bulk import clubs (admin only)
 - `POST /api/admin/import-excel` — import from XLSX (admin only)
 - `GET /api/admin/backup` — full backup as JSON (admin only)
@@ -125,6 +126,14 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 ### Payment Approval Bulk Effect
 - When admin approves a payment proof, ALL `status='registered'` registrations for that club are updated to `paid` (not just one)
 - Club payments cover all members at once
+
+### Payment Files Are Auth-Protected
+- `/uploads` is NOT served statically. Files are accessed via `GET /api/payment/file/:id` with a JWT (admin or owning club)
+- Frontend loads images/PDFs via `fetch` + blob URL (a plain `<img src>` / `<a href>` cannot send the Authorization header)
+- Rejecting a proof keeps the file on disk so it can still be reviewed; the club can upload a new proof which creates a new row
+
+### Registrations Locked After Paid/Forfeited
+- Clubs cannot edit or delete registrations whose status is `paid` or `forfeited` (server rejects with 400, UI hides the buttons)
 
 ### Registration Sorting
 - Summary page sorts clubs by earliest registration time first (ASC), no-registration clubs last

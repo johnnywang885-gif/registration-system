@@ -13,7 +13,6 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
@@ -219,6 +218,9 @@ function startServer() {
     try {
       const reg = await getOne("SELECT * FROM registrations WHERE id = ? AND club_id = ?", [req.params.id, req.user.clubId]);
       if (!reg) return res.status(404).json({ error: '報名資料不存在' });
+      if (reg.status === 'paid' || reg.status === 'forfeited') {
+        return res.status(400).json({ error: '已繳費或已棄權的報名無法編輯' });
+      }
 
       const { position, name, id_card, birthday, phone, meal_type } = req.body;
       await runQuery(
@@ -237,6 +239,9 @@ function startServer() {
     try {
       const reg = await getOne("SELECT * FROM registrations WHERE id = ? AND club_id = ?", [req.params.id, req.user.clubId]);
       if (!reg) return res.status(404).json({ error: '報名資料不存在' });
+      if (reg.status === 'paid' || reg.status === 'forfeited') {
+        return res.status(400).json({ error: '已繳費或已棄權的報名無法刪除' });
+      }
 
       await runQuery("DELETE FROM registrations WHERE id = ? AND club_id = ?", [req.params.id, req.user.clubId]);
       res.json({ message: '刪除成功' });
@@ -267,6 +272,25 @@ function startServer() {
       [req.user.clubId]
     );
     res.json(uploads);
+  });
+
+  app.get('/api/payment/file/:id', authMiddleware, async (req, res) => {
+    try {
+      const proof = await getOne("SELECT * FROM payment_proofs WHERE id = ?", [req.params.id]);
+      if (!proof) return res.status(404).json({ error: '檔案不存在' });
+
+      const isAdmin = req.user.isAdmin === 1 || req.user.isAdmin === true;
+      if (!isAdmin && Number(proof.club_id) !== Number(req.user.clubId)) {
+        return res.status(403).json({ error: '無權限存取此檔案' });
+      }
+
+      const filePath = path.join(__dirname, proof.file_path.replace(/^\//, ''));
+      if (!fs.existsSync(filePath)) return res.status(404).json({ error: '檔案已不存在' });
+      res.sendFile(filePath);
+    } catch (err) {
+      console.error('Load payment file error:', err.message);
+      res.status(500).json({ error: '載入檔案失敗' });
+    }
   });
 
   // ===== Admin API =====
@@ -419,11 +443,6 @@ function startServer() {
           "UPDATE registrations SET status = 'paid' WHERE club_id = ? AND status = 'registered'",
           [proof.club_id]
         );
-      }
-    } else if (action === 'reject') {
-      if (proof && proof.file_path) {
-        const filePath = path.join(__dirname, proof.file_path.replace(/^\//, ''));
-        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
       }
     }
 
@@ -686,9 +705,9 @@ function startServer() {
 
   // ===== Global Error Handler (catches async errors in route handlers) =====
   app.use((err, req, res, next) => {
-    console.error('Route error:', err.message);
+    console.error('Route error:', err);
     if (res.headersSent) return next(err);
-    res.status(500).json({ error: '伺服器錯誤: ' + err.message });
+    res.status(500).json({ error: '伺服器錯誤，請稍後再試' });
   });
 
   // ===== Start Server =====

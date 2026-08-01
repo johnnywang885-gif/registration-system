@@ -185,8 +185,16 @@
       });
     });
 
+    let clubsList = [];
+
     function closeModal() {
       document.getElementById('modal').classList.add('hidden');
+    }
+
+    function esc(value) {
+      return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[ch]));
     }
 
     function statusBadge(status) {
@@ -232,13 +240,13 @@
                 ${data.map(r => `
                   <tr>
                     <td>${r.club_id}</td>
-                    <td>${r.club_name}</td>
-                    <td>${r.position || '-'}</td>
-                    <td>${r.name}</td>
-                    <td>${r.id_card || '-'}</td>
-                    <td>${r.birthday || '-'}</td>
-                    <td>${r.phone || '-'}</td>
-                    <td>${r.meal_type || '-'}</td>
+                    <td>${esc(r.club_name)}</td>
+                    <td>${esc(r.position || '-')}</td>
+                    <td>${esc(r.name)}</td>
+                    <td>${esc(r.id_card || '-')}</td>
+                    <td>${esc(r.birthday || '-')}</td>
+                    <td>${esc(r.phone || '-')}</td>
+                    <td>${esc(r.meal_type || '-')}</td>
                     <td>第${r.phase}階段</td>
                     <td>${statusBadge(r.status)}</td>
                     <td>
@@ -318,11 +326,11 @@
                 ${data.map(p => `
                   <tr>
                     <td>${p.club_id}</td>
-                    <td>${p.club_name}</td>
+                    <td>${esc(p.club_name)}</td>
                     <td>
-                      <a href="${p.file_path}" target="_blank" style="color: #667eea;">
-                        ${p.file_type === 'pdf' ? 'PDF 檔案' : '圖片'}
-                      </a>
+                      <button class="btn btn-sm btn-secondary" onclick="viewProof(${p.id})">
+                        ${p.file_type === 'pdf' ? '檢視 PDF' : '檢視圖片'}
+                      </button>
                     </td>
                     <td>${new Date(p.uploaded_at + 'Z').toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })}</td>
                     <td>${paymentStatusBadge(p.status)}</td>
@@ -362,6 +370,19 @@
       loadRegistrations();
     }
 
+    async function viewProof(id) {
+      try {
+        const res = await fetch(`/api/payment/file/${id}`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (!res.ok) { alert('無法載入檔案'); return; }
+        const blob = await res.blob();
+        window.open(URL.createObjectURL(blob), '_blank');
+      } catch (err) {
+        alert('載入檔案失敗');
+      }
+    }
+
     async function resetPayment(id) {
       if (!confirm('確定重設為待審核？已繳費狀態將會被還原。')) return;
       await fetch(`/api/payment/reset/${id}`, {
@@ -380,6 +401,7 @@
           headers: { 'Authorization': `Bearer ${token}` }
         });
         const data = await res.json();
+        clubsList = data;
 
         // Populate filter dropdown
         const filterClub = document.getElementById('filterClub');
@@ -400,12 +422,12 @@
               ${data.map(c => `
                 <tr>
                   <td>${c.club_id}</td>
-                  <td>${c.club_name}</td>
+                  <td>${esc(c.club_name)}</td>
                   <td>${c.is_admin ? '管理員' : '一般社團'}</td>
                   <td>
                     ${!c.is_admin ? `
                       <div class="btn-group">
-                        <button class="btn btn-sm btn-warning" onclick="editClub(${c.club_id}, '${c.club_name}')">編輯</button>
+                        <button class="btn btn-sm btn-warning" onclick="editClub(${c.club_id})">編輯</button>
                         <button class="btn btn-sm btn-secondary" onclick="resetPassword(${c.club_id})">重設密碼</button>
                         <button class="btn btn-sm btn-danger" onclick="deleteClub(${c.club_id})">刪除</button>
                       </div>
@@ -460,12 +482,14 @@
       loadClubs();
     }
 
-    function editClub(id, name) {
+    function editClub(id) {
+      const club = clubsList.find(c => c.club_id === id);
+      const name = club ? club.club_name : '';
       document.getElementById('modalTitle').textContent = '編輯社團';
       document.getElementById('modalContent').innerHTML = `
         <div class="form-group">
           <label>社名</label>
-          <input type="text" id="editClubName" value="${name}">
+          <input type="text" id="editClubName" value="${esc(name)}">
         </div>
       `;
       document.getElementById('modalConfirm').onclick = async () => {
@@ -645,9 +669,9 @@
                   <tr>
                     <td>${i + 1}</td>
                     <td>${s.club_id}</td>
-                    <td>${s.club_name}</td>
-                    <td>${s.name}</td>
-                    <td>${s.position || '-'}</td>
+                    <td>${esc(s.club_name)}</td>
+                    <td>${esc(s.name)}</td>
+                    <td>${esc(s.position || '-')}</td>
                     <td>${new Date(s.created_at + 'Z').toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })}</td>
                     <td><button class="btn btn-sm btn-primary" onclick="promoteOne(${s.id})">手動遞補</button></td>
                   </tr>

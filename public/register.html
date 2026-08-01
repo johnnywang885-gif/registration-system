@@ -230,6 +230,13 @@
     if (!token) window.location.href = '/';
 
     let editingId = null;
+    let regList = [];
+
+    function esc(value) {
+      return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[ch]));
+    }
 
     function showAlert(msg, type = 'success') {
       const box = document.getElementById('alertBox');
@@ -256,12 +263,13 @@
     }
 
     function renderRegCard(r) {
+      const editable = r.status === 'registered' || r.status === 'standby';
       return `
         <div class="reg-card">
           <div class="reg-card-top">
             <div>
-              <div class="reg-card-name">${r.name}</div>
-              ${r.position ? `<div class="reg-card-position">${r.position}</div>` : ''}
+              <div class="reg-card-name">${esc(r.name)}</div>
+              ${r.position ? `<div class="reg-card-position">${esc(r.position)}</div>` : ''}
             </div>
             <div style="display:flex; align-items:center; gap:8px; flex-shrink:0;">
               <span class="reg-card-phase">第${r.phase}階段</span>
@@ -269,15 +277,16 @@
             </div>
           </div>
           <div class="reg-card-details">
-            ${r.id_card ? `<span class="reg-card-field"><strong>身分證</strong> ${r.id_card}</span>` : ''}
-            ${r.birthday ? `<span class="reg-card-field"><strong>生日</strong> ${r.birthday}</span>` : ''}
-            ${r.phone ? `<span class="reg-card-field"><strong>手機</strong> ${r.phone}</span>` : ''}
-            ${r.meal_type ? `<span class="reg-card-field"><strong>餐別</strong> ${r.meal_type}</span>` : ''}
+            ${r.id_card ? `<span class="reg-card-field"><strong>身分證</strong> ${esc(r.id_card)}</span>` : ''}
+            ${r.birthday ? `<span class="reg-card-field"><strong>生日</strong> ${esc(r.birthday)}</span>` : ''}
+            ${r.phone ? `<span class="reg-card-field"><strong>手機</strong> ${esc(r.phone)}</span>` : ''}
+            ${r.meal_type ? `<span class="reg-card-field"><strong>餐別</strong> ${esc(r.meal_type)}</span>` : ''}
           </div>
+          ${editable ? `
           <div class="reg-card-actions">
-            <button class="btn btn-sm btn-warning" onclick='editReg(${JSON.stringify(r)})'>編輯</button>
+            <button class="btn btn-sm btn-warning" onclick="editReg(${r.id})">編輯</button>
             <button class="btn btn-sm btn-danger" onclick="deleteReg(${r.id})">刪除</button>
-          </div>
+          </div>` : ''}
         </div>`;
     }
 
@@ -289,6 +298,7 @@
         });
         if (res.status === 401) { localStorage.clear(); window.location.href = '/'; return; }
         const data = await res.json();
+        regList = data.registrations || [];
 
         document.getElementById('clubInfo').textContent =
           `${data.club.club_name} (${data.club.club_id}) | 已報名 ${data.count} 人`;
@@ -311,7 +321,9 @@
       }
     }
 
-    function editReg(reg) {
+    function editReg(id) {
+      const reg = regList.find(r => r.id === id);
+      if (!reg) return;
       editingId = reg.id;
       document.getElementById('position').value = reg.position || '';
       document.getElementById('name').value = reg.name;
