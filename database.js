@@ -71,9 +71,9 @@ async function initDatabase() {
   const settingsCount = settingsCheck.rows[0]?.cnt || 0;
   if (settingsCount === 0) {
     const defaultSettings = [
-      ['phase1_deadline', '2025-09-20'],
-      ['payment_deadline', '2025-09-30'],
-      ['phase2_deadline', '2025-10-20'],
+      ['phase1_deadline', '2026-09-20'],
+      ['payment_deadline', '2026-09-30'],
+      ['phase2_deadline', '2026-10-20'],
       ['guaranteed_quota', '10'],
       ['phase1_total_quota', '160'],
       ['current_phase', '1']

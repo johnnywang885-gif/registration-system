@@ -114,11 +114,9 @@
               <input type="number" id="settingPhase1Quota" min="1">
             </div>
             <div class="form-group">
-              <label>目前階段</label>
-              <select id="settingCurrentPhase">
-                <option value="1">第一階段</option>
-                <option value="2">第二階段</option>
-              </select>
+              <label>目前階段（依日期自動推算）</label>
+              <div id="settingCurrentPhase" style="padding: 12px 14px; background: #f5f0eb; border-radius: 8px; color: #4a3728; font-size: 15px;"></div>
+              <div style="font-size: 12px; color: #999; margin-top: 6px;" id="phaseInfoText"></div>
             </div>
           </div>
           <div class="btn-group">
@@ -144,7 +142,7 @@
 
       <!-- 遞補順序 -->
       <div class="tab-content" id="tab-standby">
-        <h3 style="font-size:15px; color:#4a3728; margin-bottom:12px;">第一階段候補遞補順序</h3>
+        <h3 style="font-size:15px; color:#4a3728; margin-bottom:12px;">候補遞補順序（依登錄順序，滿 160 名額時第二階段自動轉候補）</h3>
         <div class="loading hidden" id="loadingStandby">
           <div class="spinner"></div>
         </div>
@@ -578,6 +576,13 @@
       loadClubs();
     }
 
+    const phaseLabels = {
+      phase1: '第一階段（報名中）',
+      phase1_closed: '第一階段已截止（等待繳費截止）',
+      phase2: '第二階段（報名中）',
+      closed: '報名已截止'
+    };
+
     // === Settings ===
     async function loadSettings() {
       try {
@@ -590,7 +595,9 @@
         document.getElementById('settingPhase2').value = data.phase2_deadline || '';
         document.getElementById('settingQuota').value = data.guaranteed_quota || 10;
         document.getElementById('settingPhase1Quota').value = data.phase1_total_quota || 160;
-        document.getElementById('settingCurrentPhase').value = data.current_phase || '1';
+        document.getElementById('settingCurrentPhase').textContent = phaseLabels[data.derived_phase] || data.derived_phase || '-';
+        document.getElementById('phaseInfoText').textContent =
+          `今日 ${data.today || '-'} ｜ 已占名額 ${data.occupancy ?? '-'} ／ ${data.phase1_total_quota || 160} ｜ 剩餘 ${data.remaining ?? '-'}`;
       } catch (err) {
         console.error(err);
       }
@@ -603,8 +610,7 @@
         payment_deadline: document.getElementById('settingPayment').value,
         phase2_deadline: document.getElementById('settingPhase2').value,
         guaranteed_quota: document.getElementById('settingQuota').value,
-        phase1_total_quota: document.getElementById('settingPhase1Quota').value,
-        current_phase: document.getElementById('settingCurrentPhase').value
+        phase1_total_quota: document.getElementById('settingPhase1Quota').value
       };
 
       await fetch('/api/admin/settings', {
@@ -656,6 +662,7 @@
               <thead>
                 <tr>
                   <th>序號</th>
+                  <th>階段</th>
                   <th>社號</th>
                   <th>社名</th>
                   <th>姓名</th>
@@ -668,6 +675,7 @@
                 ${list.map((s, i) => `
                   <tr>
                     <td>${i + 1}</td>
+                    <td>第${s.phase}階段</td>
                     <td>${s.club_id}</td>
                     <td>${esc(s.club_name)}</td>
                     <td>${esc(s.name)}</td>

@@ -39,19 +39,33 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 - Tables: `clubs`, `registrations`, `payment_proofs`, `settings`
 
 ### Registration Status Flow
-- `registered` → default status when a club member registers
-- `standby` → set automatically when club exceeds `guaranteed_quota` in Phase 1 (超額報名)
+- `registered` → default status when a club member registers (occupies a seat)
+- `standby` → set when club exceeds `guaranteed_quota` in Phase 1, when occupancy >= 160, or Phase 2 overflow (候補，不占名額)
 - `paid` → set when admin approves payment proof
-- `forfeited` → set when admin marks as forfeited (棄權)
+- `forfeited` → set when admin marks as forfeited (棄權) OR auto-forfeited at deadline (未繳費視同未報名)
 - Status changes: `registered` ↔ `standby` ↔ `paid` ↔ `forfeited`
 
-### Phase System
-- Phase 1 registration deadline, Phase 2 after that
-- `settings.guaranteed_quota` (default 10) — per-club guaranteed spots
-- `settings.phase1_total_quota` (default 160) — total Phase 1 capacity
-- `POST /api/admin/promote` — auto-promote standby to registered (跨社遞補)
-- `GET /api/admin/standby-list` — list of unpromoted standby registrations
-- `POST /api/admin/promote/:id` — manual single-person promotion
+### Phase System (date-driven, automatic)
+- Total capacity is `settings.phase1_total_quota` (default 160) — the hard cap on the **official confirmed list** (occupancy = `COUNT(status IN ('registered','paid'))`). Standby and forfeited do NOT count.
+- Phase is **derived from dates** (`deadlines.js` `phaseState`), NOT from the manual `current_phase` setting (now ignored):
+  - `today <= phase1_deadline` → `phase1` (Phase 1 open)
+  - `phase1_deadline < today <= payment_deadline` → `phase1_closed` (new Phase 1 registrations rejected)
+  - `payment_deadline < today <= phase2_deadline` → `phase2` (Phase 2 open)
+  - `today > phase2_deadline` → `closed` (registration closed)
+- Dates are compared as `YYYY-MM-DD` strings in `Asia/Taipei`; **deadline day is inclusive**, transitions run the day after (`taipeiToday()`).
+- Phase 1 registration: standby if club exceeds `guaranteed_quota` (10) OR occupancy >= 160.
+- Phase 2 registration: `registered` while occupancy < 160, otherwise `standby` (Phase 2 standby queue for manual admin adjustment).
+- `GET /api/admin/standby-list` lists standby from BOTH phases by `created_at ASC`.
+- Auto-promotion targets **Phase 1** standby only (by login order, filling to quota). Phase 2 standby must be promoted manually (`POST /api/admin/promote/:id`), both are bound by the 160 cap.
+
+### Deadline Enforcement (`deadlines.js`)
+- `enforceDeadlines` middleware runs on **every `/api` request** + once at startup after DB ready. Transitions are idempotent:
+  1. `today > payment_deadline` → clubs WITHOUT an `approved` payment proof: Phase 1 `registered` → `forfeited` (未繳費視同未報名)
+  2. `phase1_deadline < today <= phase2_deadline` → auto-promote Phase 1 standby by login order until occupancy = 160
+  3. `today > phase2_deadline` → clubs without `approved` proof: Phase 2 `registered` → `forfeited` (no further promotion)
+- Payment status is judged **per club** (club has at least one `approved` proof = paid). Proofs still `pending`/`rejected` after the deadline count as unpaid.
+- `POST /api/admin/promote` (manual button) and `POST /api/admin/promote/:id` remain as backup; both respect the 160 cap.
+- `GET /api/admin/settings` returns `derived_phase`, `today`, `occupancy`, `remaining` for the admin UI (which shows the phase read-only).
 
 ### Auth (`auth.js`)
 - JWT middleware: `authMiddleware` for protected routes, `adminMiddleware` for admin-only
@@ -98,15 +112,15 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 ## API Routes
 - `POST /api/login` — returns JWT token
 - `GET /api/summary` — public stats (no auth): phase breakdown, guaranteed/standby counts
-- `POST /api/registrations` — create registration (auth required, auto-standby in Phase 1)
+- `POST /api/registrations` — create registration (auth required; phase & status derived from dates, auto-standby logic)
 - `GET /api/my-registrations` — list club's registrations (auth required)
 - `GET /api/admin/all` — all registrations with filters: club_id, phase, status (admin only)
 - `PUT /api/admin/payment/:id` — mark registration as paid (admin only)
 - `PUT /api/admin/forfeit/:id` — mark registration as forfeited (admin only)
 - `PUT /api/admin/reset-status/:id` — reset registration to registered (admin only)
-- `POST /api/admin/promote` — auto-promote standby registrations, works in any phase (admin only)
-- `GET /api/admin/standby-list` — list standby registrations (admin only)
-- `POST /api/admin/promote/:id` — manual promote single standby (admin only)
+- `POST /api/admin/promote` — auto-promote Phase 1 standby to fill quota (admin only)
+- `GET /api/admin/standby-list` — list standby from BOTH phases (admin only)
+- `POST /api/admin/promote/:id` — manual promote single standby, respects 160 cap (admin only)
 - `PUT /api/payment/review/:id` — approve/reject payment proof (admin only)
 - `PUT /api/payment/reset/:id` — reset payment proof to pending (admin only)
 - `GET /api/payment/file/:id` — view payment proof file (auth required: admin or owning club)
@@ -142,6 +156,7 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 ```
 server.js        — Express app + all routes (startServer is sync, not async)
 database.js      — Turso cloud operations (@libsql/client), db starts as null
+deadlines.js     — date-driven phase state machine + auto promote/forfeit (enforceDeadlines middleware)
 auth.js          — JWT auth middleware
 public/          — Frontend HTML files
 public/css/      — Shared styles (warm earthy theme)

@@ -7,6 +7,7 @@ const bcrypt = require('bcryptjs');
 const XLSX = require('xlsx');
 const { initDatabase, getAll, getOne, runQuery, insert, importClubs, saveDatabase, getDb } = require('./database');
 const { generateToken, authMiddleware, adminMiddleware } = require('./auth');
+const { taipeiToday, phaseState, getSettings, occupancy, promoteStandby, forfeitUnpaidByPhase, runEnforcement, enforceDeadlines } = require('./deadlines');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -68,6 +69,9 @@ function startServer() {
   app.get('/admin', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'admin.html'));
   });
+
+  // ===== Deadline Enforcement (date-driven phase transitions, runs on every API request) =====
+  app.use('/api', enforceDeadlines);
 
   // ===== Auth API =====
   app.post('/api/login', async (req, res) => {
@@ -182,29 +186,43 @@ function startServer() {
 
   app.post('/api/registrations', authMiddleware, async (req, res) => {
     try {
-      const settingsRows = await getAll("SELECT key, value FROM settings");
-      const settings = {};
-      settingsRows.forEach(s => { settings[s.key] = s.value; });
-      const currentPhase = parseInt(settings.current_phase || '1');
+      const settings = await getSettings();
+      const today = taipeiToday();
+      const state = phaseState(settings, today);
+      const quota = parseInt(settings.phase1_total_quota || '160');
 
       const { position, name, id_card, birthday, phone, meal_type } = req.body;
       if (!name) return res.status(400).json({ error: '請輸入姓名' });
 
-      let newStatus = 'registered';
-      if (currentPhase === 1) {
+      let regPhase;
+      let newStatus;
+
+      if (state === 'phase1') {
+        regPhase = 1;
+        const current = await occupancy(getDb());
         const phase1Count = await getOne(
           "SELECT COUNT(*) as cnt FROM registrations WHERE club_id = ? AND phase = 1 AND status != 'forfeited'",
           [req.user.clubId]
         );
         const guaranteedQuota = parseInt(settings.guaranteed_quota || '10');
-        if (phase1Count.cnt >= guaranteedQuota) {
+        if (current >= quota || phase1Count.cnt >= guaranteedQuota) {
           newStatus = 'standby';
+        } else {
+          newStatus = 'registered';
         }
+      } else if (state === 'phase1_closed') {
+        return res.status(400).json({ error: '第一階段報名已截止' });
+      } else if (state === 'phase2') {
+        regPhase = 2;
+        const current = await occupancy(getDb());
+        newStatus = current < quota ? 'registered' : 'standby';
+      } else {
+        return res.status(400).json({ error: '報名已截止' });
       }
 
       const id = await insert(
         "INSERT INTO registrations (club_id, position, name, id_card, birthday, phone, meal_type, phase, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        [req.user.clubId, position || '', name, id_card || '', birthday || '', phone || '', meal_type || '', currentPhase, newStatus]
+        [req.user.clubId, position || '', name, id_card || '', birthday || '', phone || '', meal_type || '', regPhase, newStatus]
       );
 
       res.json({ id, message: newStatus === 'standby' ? '報名成功（候補）' : '報名成功' });
@@ -346,37 +364,16 @@ function startServer() {
   // Promotion (standby -> registered)
   app.post('/api/admin/promote', authMiddleware, adminMiddleware, async (req, res) => {
     try {
-      const settingsRows = await getAll("SELECT key, value FROM settings");
-      const settings = {};
-      settingsRows.forEach(s => { settings[s.key] = s.value; });
+      const settings = await getSettings();
+      const quota = parseInt(settings.phase1_total_quota || '160');
+      const result = await promoteStandby(getDb(), quota);
 
-      const phase1TotalQuota = parseInt(settings.phase1_total_quota || '160');
-
-      const currentTotal = await getOne(
-        "SELECT COUNT(*) as cnt FROM registrations WHERE phase = 1 AND status IN ('registered', 'standby')"
-      );
-      const availableSpots = phase1TotalQuota - (currentTotal?.cnt || 0);
-
-      if (availableSpots <= 0) {
-        return res.json({ message: '第一階段已額滿，無需遞補', promoted: 0 });
+      if (result.promoted === 0) {
+        const current = await occupancy(getDb());
+        const message = current >= quota ? '已額滿，無需遞補' : '無候補人員需遞補';
+        return res.json({ message, promoted: 0 });
       }
-
-      const standbyList = await getAll(
-        "SELECT id FROM registrations WHERE phase = 1 AND status = 'standby' ORDER BY created_at ASC"
-      );
-      const toPromote = standbyList.slice(0, availableSpots);
-
-      if (toPromote.length === 0) {
-        return res.json({ message: '無候補人員需遞補', promoted: 0 });
-      }
-
-      const stmts = toPromote.map(r => ({
-        sql: "UPDATE registrations SET status = 'registered' WHERE id = ?",
-        args: [r.id]
-      }));
-      await getDb().batch(stmts, 'write');
-
-      res.json({ message: `已遞補 ${toPromote.length} 人`, promoted: toPromote.length });
+      res.json({ message: `已遞補 ${result.promoted} 人`, promoted: result.promoted });
     } catch (err) {
       console.error('Promote error:', err.message);
       res.status(500).json({ error: '遞補失敗: ' + err.message });
@@ -386,11 +383,11 @@ function startServer() {
   app.get('/api/admin/standby-list', authMiddleware, adminMiddleware, async (req, res) => {
     try {
       const list = await getAll(`
-        SELECT r.id, r.club_id, c.club_name, r.name, r.position, r.created_at
+        SELECT r.id, r.club_id, c.club_name, r.name, r.position, r.phase, r.created_at
         FROM registrations r
         JOIN clubs c ON r.club_id = c.club_id
-        WHERE r.phase = 1 AND r.status = 'standby'
-        ORDER BY r.created_at ASC
+        WHERE r.status = 'standby'
+        ORDER BY r.created_at ASC, r.id ASC
       `);
       res.json(list);
     } catch (err) {
@@ -402,11 +399,17 @@ function startServer() {
   app.post('/api/admin/promote/:id', authMiddleware, adminMiddleware, async (req, res) => {
     try {
       const reg = await getOne(
-        "SELECT * FROM registrations WHERE id = ? AND phase = 1 AND status = 'standby'",
+        "SELECT * FROM registrations WHERE id = ? AND status = 'standby'",
         [req.params.id]
       );
       if (!reg) {
         return res.status(404).json({ error: '找不到該候補人員或已遞補' });
+      }
+      const settings = await getSettings();
+      const quota = parseInt(settings.phase1_total_quota || '160');
+      const current = await occupancy(getDb());
+      if (current >= quota) {
+        return res.status(400).json({ error: '名額已滿，無法遞補' });
       }
       await runQuery("UPDATE registrations SET status = 'registered' WHERE id = ?", [req.params.id]);
       res.json({ message: `已手動遞補 ${reg.name}（${reg.club_id}）` });
@@ -551,7 +554,16 @@ function startServer() {
     const settingsRows = await getAll("SELECT key, value FROM settings");
     const settings = {};
     settingsRows.forEach(s => { settings[s.key] = s.value; });
-    res.json(settings);
+    const today = taipeiToday();
+    const quota = parseInt(settings.phase1_total_quota || '160');
+    const current = await occupancy(getDb());
+    res.json({
+      ...settings,
+      derived_phase: phaseState(settings, today),
+      today,
+      occupancy: current,
+      remaining: Math.max(0, quota - current)
+    });
   });
 
   app.put('/api/admin/settings', authMiddleware, adminMiddleware, async (req, res) => {
@@ -716,7 +728,15 @@ function startServer() {
   });
   // ===== Init Database (non-blocking, in background) =====
   initDatabase()
-    .then(() => console.log('Database ready'))
+    .then(async () => {
+      console.log('Database ready');
+      try {
+        await runEnforcement();
+        console.log('Startup enforcement done');
+      } catch (err) {
+        console.error('Startup enforcement error:', err.message);
+      }
+    })
     .catch(err => console.error('Database init failed:', err.message));
 }
 
