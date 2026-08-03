@@ -292,14 +292,31 @@
       loadRegistrations();
     }
 
-    function exportExcel() {
+    async function exportExcel() {
       const params = new URLSearchParams();
       const clubId = document.getElementById('filterClub').value;
       const phase = document.getElementById('filterPhase').value;
       if (clubId) params.set('club_id', clubId);
       if (phase) params.set('phase', phase);
 
-      window.open(`/api/admin/export?${params}`, '_blank');
+      try {
+        const res = await fetch(`/api/admin/export?${params}`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (res.status === 401) { localStorage.clear(); window.location.href = '/'; return; }
+        if (!res.ok) { alert('匯出失敗'); return; }
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'registration_report.xlsx';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      } catch (err) {
+        alert('匯出失敗: ' + err.message);
+      }
     }
 
     // === Payments ===
@@ -711,8 +728,28 @@
     }
 
     // === Backup & Restore ===
-    function backupData() {
-      window.open('/api/admin/backup', '_blank');
+    async function backupData() {
+      try {
+        const res = await fetch('/api/admin/backup', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (res.status === 401) { localStorage.clear(); window.location.href = '/'; return; }
+        if (!res.ok) { alert('備份失敗'); return; }
+        const blob = await res.blob();
+        const disposition = res.headers.get('Content-Disposition') || '';
+        const match = disposition.match(/filename="?([^";]+)"?/);
+        const filename = match ? match[1] : `backup_${new Date().toISOString().slice(0, 10)}.json`;
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      } catch (err) {
+        alert('備份失敗: ' + err.message);
+      }
     }
 
     async function restoreData(input) {

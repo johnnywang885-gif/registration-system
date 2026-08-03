@@ -11,6 +11,16 @@ npm run dev         # development with file watching (node --watch)
 ```
 No lint, typecheck, or test scripts exist. This is a plain JS project with no build step.
 
+`dotenv` auto-loads `.env` (gitignored). The local `.env` has **empty** `TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN` — real Turso credentials exist only on Railway. `npm start` locally boots fine but every `/api` call returns 500 until a real Turso URL/token is supplied.
+
+## Verification (no test framework)
+- Syntax check: `node --check server.js deadlines.js database.js auth.js`
+- `@libsql/client` accepts `file:` URLs, so the whole stack (database.js + deadlines.js + server.js) runs against a local SQLite file: set `TURSO_DATABASE_URL=file:C:/abs/path.db`, `TURSO_AUTH_TOKEN=`, then call `initDatabase()` + `runEnforcement()` directly or boot `server.js`.
+- Real-data offline test (never touches production): login as admin (`admin`/`admin123`) → `GET /api/admin/backup` returns full JSON (`clubs`, `registrations`, `payment_proofs`, `settings`) → seed it into a local `file:` copy → run `deadlines.js` enforcement against the copy. Do NOT point enforcement at the real Turso DB.
+- `deadlines.js` `taipeiToday()` always uses the real Taipei date — to simulate other phases, edit the `settings` rows (deadline dates) in the local copy, not the clock.
+- Windows gotcha: a process holding a `file:` DB (e.g. a spawned `server.js`) locks the file; kill the process before deleting/reopening it.
+- `test/` only holds stale one-off simulation scripts (`phase2_standby.js`, `simulate.js`) that still reference the ignored `current_phase` setting — not a real test suite.
+
 ## Architecture
 
 ### Startup Order (critical — do not rearrange)
@@ -31,7 +41,7 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 - File uploads via multer to `uploads/payments/`
 
 ### Database (`database.js`)
-- Uses `@libsql/client` connecting to Turso cloud (NOT local SQLite)
+- Uses `@libsql/client` connecting to `TURSO_DATABASE_URL` (Turso cloud in production; also accepts `file:` for offline testing — see Verification)
 - `db` is `null` until `initDatabase()` succeeds
 - All DB functions (`getAll`, `getOne`, `runQuery`, `insert`) check `if (!db)` and throw "Database not connected" if called before init completes
 - `db.batch()` for multi-statement operations (table creation, bulk inserts)
@@ -97,6 +107,8 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 ### Deploy Flow
 - Push to `master` → Railway auto-deploys via GitHub webhook
 - Healthcheck: `GET /health` must return 200 within 30s
+- Current production URL: `https://registration-system-production-4e05.up.railway.app` (`/health` and `/api/summary` are public for quick checks)
+- The `railway` CLI is installed but **not linked/logged in** in this environment (`railway whoami` / `railway variables` print nothing). Get real env vars/creds from the Railway dashboard — do not assume `railway` commands work.
 - If deploy fails with "Healthcheck failure" or "Application failed to respond":
   - Check that routes are registered before `initDatabase()`
   - Check that `initDatabase()` is non-blocking
