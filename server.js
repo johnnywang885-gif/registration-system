@@ -136,6 +136,7 @@ function startServer() {
         SELECT c.club_id, c.club_name,
           COUNT(CASE WHEN r.phase = 1 AND r.status = 'registered' THEN 1 END) as phase1_registered,
           COUNT(CASE WHEN r.phase = 1 AND r.status = 'standby' THEN 1 END) as phase1_standby,
+          COUNT(CASE WHEN r.phase = 1 AND r.status = 'paid' THEN 1 END) as phase1_paid,
           COUNT(CASE WHEN r.phase = 2 AND r.status != 'forfeited' THEN 1 END) as phase2_count,
           MAX(r.created_at) as last_register_time
         FROM clubs c
@@ -146,7 +147,7 @@ function startServer() {
       `);
 
       summary.forEach(s => {
-        s.phase1_total = s.phase1_registered + s.phase1_standby;
+        s.phase1_total = s.phase1_registered + s.phase1_standby + s.phase1_paid;
       });
 
       const phase1Total = await getOne("SELECT COUNT(*) as cnt FROM registrations WHERE phase = 1 AND status != 'forfeited'");
@@ -155,6 +156,7 @@ function startServer() {
       res.json({
         settings,
         summary,
+        today: taipeiToday(),
         phase1Total: phase1Total?.cnt || 0,
         phase2Total: phase2Total?.cnt || 0
       });
