@@ -296,8 +296,10 @@
       const params = new URLSearchParams();
       const clubId = document.getElementById('filterClub').value;
       const phase = document.getElementById('filterPhase').value;
+      const status = document.getElementById('filterStatus').value;
       if (clubId) params.set('club_id', clubId);
       if (phase) params.set('phase', phase);
+      if (status) params.set('status', status);
 
       try {
         const res = await fetch(`/api/admin/export?${params}`, {

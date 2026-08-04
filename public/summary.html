@@ -25,7 +25,7 @@
       </div>
       <div class="stat-card" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);">
         <h3 id="totalRegistered">-</h3>
-        <p>第一階段總報名</p>
+        <p id="totalRegisteredLabel">第一階段總報名</p>
       </div>
       <div class="stat-card" style="background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);">
         <h3 id="totalPhase2">-</h3>
@@ -70,16 +70,23 @@
         const data = await res.json();
 
         document.getElementById('totalClubs').textContent = data.summary.length;
-        document.getElementById('totalRegistered').textContent = data.phase1Total;
+
+        const today = data.today;
+        const paymentDeadline = data.settings.payment_deadline;
+        const afterPayment = !!paymentDeadline && today > paymentDeadline;
+        if (afterPayment) {
+          document.getElementById('totalRegistered').textContent = data.phase1PaidTotal;
+          document.getElementById('totalRegisteredLabel').textContent = '第一階段已繳費';
+        } else {
+          document.getElementById('totalRegistered').textContent = data.phase1Total;
+          document.getElementById('totalRegisteredLabel').textContent = '第一階段總報名';
+        }
         document.getElementById('totalPhase2').textContent = data.phase2Total;
 
         const tbody = document.getElementById('summaryBody');
         if (data.summary.length === 0) {
           tbody.innerHTML = '<tr><td colspan="5" class="text-center" style="padding: 20px; color: #999;">尚無報名資料</td></tr>';
         } else {
-        const today = data.today;
-        const paymentDeadline = data.settings.payment_deadline;
-        const afterPayment = !!paymentDeadline && today > paymentDeadline;
         tbody.innerHTML = data.summary.map(s => `
             <tr>
               <td>${s.club_id}</td>

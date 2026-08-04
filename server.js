@@ -151,6 +151,7 @@ function startServer() {
       });
 
       const phase1Total = await getOne("SELECT COUNT(*) as cnt FROM registrations WHERE phase = 1 AND status != 'forfeited'");
+      const phase1PaidTotal = await getOne("SELECT COUNT(*) as cnt FROM registrations WHERE phase = 1 AND status = 'paid'");
       const phase2Total = await getOne("SELECT COUNT(*) as cnt FROM registrations WHERE phase = 2 AND status != 'forfeited'");
 
       res.json({
@@ -158,6 +159,7 @@ function startServer() {
         summary,
         today: taipeiToday(),
         phase1Total: phase1Total?.cnt || 0,
+        phase1PaidTotal: phase1PaidTotal?.cnt || 0,
         phase2Total: phase2Total?.cnt || 0
       });
     } catch (err) {
@@ -658,7 +660,7 @@ function startServer() {
 
   // Export Excel
   app.get('/api/admin/export', authMiddleware, adminMiddleware, async (req, res) => {
-    const { club_id, phase } = req.query;
+    const { club_id, phase, status } = req.query;
     let sql = `
       SELECT r.*, c.club_name
       FROM registrations r
@@ -668,6 +670,7 @@ function startServer() {
     const params = [];
     if (club_id) { sql += " AND r.club_id = ?"; params.push(parseInt(club_id)); }
     if (phase) { sql += " AND r.phase = ?"; params.push(parseInt(phase)); }
+    if (status) { sql += " AND r.status = ?"; params.push(status); }
     sql += " ORDER BY r.club_id, r.created_at";
 
     const data = await getAll(sql, params);
@@ -689,15 +692,24 @@ function startServer() {
     const ws = XLSX.utils.json_to_sheet(exportData);
     XLSX.utils.book_append_sheet(wb, ws, '報名資料');
 
+    const phaseNum = phase ? parseInt(phase) : null;
+    const statusVal = ['registered', 'standby', 'paid', 'forfeited'].includes(status) ? status : null;
+    const summaryFrags = [];
+    if (phaseNum) summaryFrags.push(`r.phase = ${phaseNum}`);
+    if (statusVal) summaryFrags.push(`r.status = '${statusVal}'`);
+    const rowCond = summaryFrags.length ? summaryFrags.join(" AND ") : "1=1";
+    const totalCond = statusVal ? `(${rowCond})` : `(${rowCond}) AND r.status != 'forfeited'`;
+    const clubCond = club_id ? `c.club_id = ${parseInt(club_id)}` : "1=1";
+
     const summaryData = await getAll(`
       SELECT c.club_id, c.club_name,
-        COUNT(CASE WHEN r.status = 'registered' THEN 1 END) as reg_count,
-        COUNT(CASE WHEN r.status = 'paid' THEN 1 END) as paid_count,
-        COUNT(CASE WHEN r.status = 'forfeited' THEN 1 END) as forfeit_count,
-        COUNT(CASE WHEN r.status != 'forfeited' THEN 1 END) as total_count
+        COUNT(CASE WHEN r.status = 'registered' AND ${rowCond} THEN 1 END) as reg_count,
+        COUNT(CASE WHEN r.status = 'paid' AND ${rowCond} THEN 1 END) as paid_count,
+        COUNT(CASE WHEN r.status = 'forfeited' AND ${rowCond} THEN 1 END) as forfeit_count,
+        COUNT(CASE WHEN ${totalCond} THEN 1 END) as total_count
       FROM clubs c
       LEFT JOIN registrations r ON c.club_id = r.club_id
-      WHERE c.is_admin = 0
+      WHERE c.is_admin = 0 AND ${clubCond}
       GROUP BY c.club_id, c.club_name
       ORDER BY c.club_id
     `);
