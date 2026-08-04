@@ -658,6 +658,20 @@ function startServer() {
     }
   });
 
+  // Clear Registration Data (keep clubs & settings)
+  app.post('/api/admin/clear-data', authMiddleware, adminMiddleware, async (req, res) => {
+    try {
+      const dbConn = getDb();
+      await dbConn.batch([
+        "DELETE FROM payment_proofs",
+        "DELETE FROM registrations"
+      ], 'write');
+      res.json({ message: '報名資料已全部清除（社團與系統設定保留）' });
+    } catch (err) {
+      res.status(500).json({ error: '清除失敗: ' + err.message });
+    }
+  });
+
   // Export Excel
   app.get('/api/admin/export', authMiddleware, adminMiddleware, async (req, res) => {
     const { club_id, phase, status } = req.query;

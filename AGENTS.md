@@ -140,6 +140,7 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 - `POST /api/admin/import-excel` — import from XLSX (admin only)
 - `GET /api/admin/backup` — full backup as JSON (admin only)
 - `POST /api/admin/restore` — restore from JSON (admin only)
+- `POST /api/admin/clear-data` — clear all registrations & payment proofs (keeps clubs & settings) (admin only)
 - `GET /api/admin/export` — export as XLSX (admin only)
 - `GET /health` — health check (no auth)
 

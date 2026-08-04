@@ -136,6 +136,7 @@
             還原備份
             <input type="file" id="restoreFileInput" accept=".json" style="display:none" onchange="restoreData(this)">
           </label>
+          <button class="btn btn-danger" onclick="clearData()">清空報名資料</button>
         </div>
         <div id="restoreMsg" class="hidden mt-10"></div>
       </div>
@@ -793,6 +794,35 @@
         msgBox.classList.remove('hidden');
       }
       input.value = '';
+    }
+
+    async function clearData() {
+      if (!confirm('確定要清空所有報名資料與繳費證明？此操作無法復原（社團與系統設定將保留）。建議先執行全量備份。')) {
+        return;
+      }
+
+      const msgBox = document.getElementById('restoreMsg');
+      try {
+        const res = await fetch('/api/admin/clear-data', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+
+        const data = await res.json();
+        msgBox.className = res.ok ? 'alert alert-success mt-10' : 'alert alert-error mt-10';
+        msgBox.textContent = data.message || data.error;
+        msgBox.classList.remove('hidden');
+
+        if (res.ok) {
+          loadRegistrations();
+          loadPayments();
+          loadStandbyList();
+        }
+      } catch (err) {
+        msgBox.className = 'alert alert-error mt-10';
+        msgBox.textContent = '清除失敗: ' + err.message;
+        msgBox.classList.remove('hidden');
+      }
     }
 
     // Init
