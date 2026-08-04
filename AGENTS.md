@@ -158,6 +158,10 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 - Frontend loads images/PDFs via `fetch` + blob URL (a plain `<img src>` / `<a href>` cannot send the Authorization header)
 - Rejecting a proof keeps the file on disk so it can still be reviewed; the club can upload a new proof which creates a new row
 
+### Admin Downloads Are Auth-Protected Too
+- `GET /api/admin/export` and `GET /api/admin/backup` require the JWT header — a `window.open(url)` / plain `<a href>` navigation cannot send it and returns `{"error":"未登入"}` (401)
+- Download pattern: `fetch` with `Authorization` header → `res.blob()` → object URL → `<a download>` click → revoke (see `exportExcel()` / `backupData()` in `public/admin.html`). Do NOT "simplify" back to `window.open`.
+
 ### Registrations Locked After Paid/Forfeited
 - Clubs cannot edit or delete registrations whose status is `paid` or `forfeited` (server rejects with 400, UI hides the buttons)
 
