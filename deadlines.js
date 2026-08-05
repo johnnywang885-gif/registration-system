@@ -32,13 +32,18 @@ async function occupancy(db) {
   return Number(result.rows[0]?.cnt) || 0;
 }
 
-async function promoteStandby(db, quota) {
+async function promoteStandby(db, quota, options = {}) {
+  const { requirePaidClub = false } = options;
   const current = await occupancy(db);
   const available = quota - current;
   if (available <= 0) return { promoted: 0 };
 
+  const clubFilter = requirePaidClub
+    ? " AND r.club_id IN (SELECT club_id FROM payment_proofs WHERE status = 'approved')"
+    : "";
+
   const result = await db.execute({
-    sql: "SELECT id FROM registrations WHERE phase = 1 AND status = 'standby' ORDER BY created_at ASC, id ASC"
+    sql: `SELECT r.id FROM registrations r WHERE r.phase = 1 AND r.status = 'standby'${clubFilter} ORDER BY r.created_at ASC, r.id ASC`
   });
   const standbyList = result.rows || [];
   const toPromote = standbyList.slice(0, available);
@@ -77,8 +82,10 @@ async function runEnforcement() {
   if (today > (settings.payment_deadline || '')) {
     await forfeitUnpaidByPhase(db, 1);
   }
-  if (today > (settings.phase1_deadline || '') && today <= (settings.phase2_deadline || '')) {
+  if (today > (settings.phase1_deadline || '') && today <= (settings.payment_deadline || '')) {
     await promoteStandby(db, quota);
+  } else if (today > (settings.payment_deadline || '') && today <= (settings.phase2_deadline || '')) {
+    await promoteStandby(db, quota, { requirePaidClub: true });
   }
   if (today > (settings.phase2_deadline || '')) {
     await forfeitUnpaidByPhase(db, 2);

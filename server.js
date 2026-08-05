@@ -698,7 +698,7 @@ function startServer() {
       '手機': r.phone,
       '素/葷': r.meal_type,
       '階段': r.phase,
-      '狀態': r.status === 'registered' ? '已報名' : r.status === 'paid' ? '已繳費' : '棄權',
+      '狀態': r.status === 'registered' ? '已報名' : r.status === 'standby' ? '候補' : r.status === 'paid' ? '已繳費' : '棄權',
       '登錄時間': r.created_at
     }));
 

@@ -19,7 +19,16 @@ No lint, typecheck, or test scripts exist. This is a plain JS project with no bu
 - Real-data offline test (never touches production): login as admin (`admin`/`admin123`) → `GET /api/admin/backup` returns full JSON (`clubs`, `registrations`, `payment_proofs`, `settings`) → seed it into a local `file:` copy → run `deadlines.js` enforcement against the copy. Do NOT point enforcement at the real Turso DB.
 - `deadlines.js` `taipeiToday()` always uses the real Taipei date — to simulate other phases, edit the `settings` rows (deadline dates) in the local copy, not the clock.
 - Windows gotcha: a process holding a `file:` DB (e.g. a spawned `server.js`) locks the file; kill the process before deleting/reopening it.
-- `test/` only holds stale one-off simulation scripts (`phase2_standby.js`, `simulate.js`) that still reference the ignored `current_phase` setting — not a real test suite.
+- Windows console mangles Chinese unless UTF-8: in PowerShell run `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8` before `node`.
+
+### Working regression scripts (`test/`)
+- `review_a_flap.js` — standalone DB test (no HTTP): seeds paid/unpaid clubs with Phase 1 standby, runs `runEnforcement()` 5×; asserts no promote↔forfeit flapping (paid-club standby promoted, unpaid-club standby stays).
+- `review_b_export.js` — boots real server on PORT 34891, seeds the 4 statuses, `GET /api/admin/export`, asserts `standby → 候補` in the 報名資料 sheet (guards the export status mapping).
+- `review_c_backup.js` — restores a real backup JSON into a local `file:` copy and runs `runEnforcement()` as a no-op sanity check (p2 already passed); never touches the live Turso DB.
+- `review_d_rule_timeline.js` — boots real server on PORT 34892, drives a full 7-stage timeline over HTTP (phase-1 overflow → promote → pay → forfeit → phase-2 standby / manual promote).
+- `sim_phase2_144_30.js` — boots real server on PORT 34893; scenario simulation (Phase 1: 144 paid + paid-club standby; Phase 2: 30 incl. those standby) printing per-club tables. Reuse as a template for "what if" simulations.
+- Run **one at a time, sequentially** — each boots its own server on a distinct port against a throwaway `file:` DB in `test/*.db` (gitignored). Pass = output ends with `PASS` / `全部階段 PASS`.
+- `phase2_standby.js` / `simulate.js` are stale one-off scripts still driven by the ignored `current_phase` setting — ignore them.
 
 ## Architecture
 
@@ -69,12 +78,14 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 - Auto-promotion targets **Phase 1** standby only (by login order, filling to quota). Phase 2 standby must be promoted manually (`POST /api/admin/promote/:id`), both are bound by the 160 cap.
 
 ### Deadline Enforcement (`deadlines.js`)
-- `enforceDeadlines` middleware runs on **every `/api` request** + once at startup after DB ready. Transitions are idempotent:
+- `enforceDeadlines` middleware runs on **every `/api` request** + once at startup after DB ready. Transitions are idempotent (4 windows):
   1. `today > payment_deadline` → clubs WITHOUT an `approved` payment proof: Phase 1 `registered` → `forfeited` (未繳費視同未報名)
-  2. `phase1_deadline < today <= phase2_deadline` → auto-promote Phase 1 standby by login order until occupancy = 160
-  3. `today > phase2_deadline` → clubs without `approved` proof: Phase 2 `registered` → `forfeited` (no further promotion)
+  2. `phase1_deadline < today <= payment_deadline` → auto-promote **ALL** Phase 1 standby (any club) by login order until occupancy = quota
+  3. `payment_deadline < today <= phase2_deadline` → auto-promote ONLY Phase 1 standby of clubs WITH an `approved` proof (`requirePaidClub`), by login order until occupancy = quota
+  4. `today > phase2_deadline` → clubs without `approved` proof: Phase 2 `registered` → `forfeited` (no further promotion)
+- Unpaid clubs' Phase 1 standby (未繳費社團候補) are NEVER auto-promoted after the payment deadline — they stay `standby` until admin manually promotes them; they are not forfeited either.
 - Payment status is judged **per club** (club has at least one `approved` proof = paid). Proofs still `pending`/`rejected` after the deadline count as unpaid.
-- `POST /api/admin/promote` (manual button) and `POST /api/admin/promote/:id` remain as backup; both respect the 160 cap.
+- `POST /api/admin/promote` (manual button) and `POST /api/admin/promote/:id` remain as backup; both respect the 160 cap. `POST /api/admin/promote` promotes Phase 1 standby of ANY club.
 - `GET /api/admin/settings` returns `derived_phase`, `today`, `occupancy`, `remaining` for the admin UI (which shows the phase read-only).
 
 ### Auth (`auth.js`)
@@ -123,7 +134,7 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 
 ## API Routes
 - `POST /api/login` — returns JWT token
-- `GET /api/summary` — public stats (no auth): phase breakdown, guaranteed/standby counts
+- `GET /api/summary` — public stats (no auth): per-club `phase1_registered/standby/paid/phase1_total/phase2_count` + totals `phase1Total`, `phase1PaidTotal`, `phase2Total`
 - `POST /api/registrations` — create registration (auth required; phase & status derived from dates, auto-standby logic)
 - `GET /api/my-registrations` — list club's registrations (auth required)
 - `GET /api/admin/all` — all registrations with filters: club_id, phase, status (admin only)
@@ -141,7 +152,7 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 - `GET /api/admin/backup` — full backup as JSON (admin only)
 - `POST /api/admin/restore` — restore from JSON (admin only)
 - `POST /api/admin/clear-data` — clear all registrations & payment proofs (keeps clubs & settings) (admin only)
-- `GET /api/admin/export` — export as XLSX (admin only)
+- `GET /api/admin/export` — export as XLSX (admin only); accepts `club_id`/`phase`/`status` filters, applied to BOTH sheets (報名資料 + 彙整統計)
 - `GET /health` — health check (no auth)
 
 ## Key Gotchas
@@ -169,6 +180,17 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 ### Registration Sorting
 - Summary page sorts clubs by earliest registration time first (ASC), no-registration clubs last
 
+### Summary Metrics Switch After Payment Deadline
+- In `summary.html`, once `today > payment_deadline`, the 第一階段 header card switches to `phase1PaidTotal` AND each club's 第一階段 column shows `phase1_paid` (已完成報名並繳費). Before the deadline both show the total (`phase1Total` / `phase1_total`).
+- Both numbers must stay on the SAME metric — a past bug shipped an inconsistent page (header = total 60, rows = paid 51). `/api/summary` returns both `phase1Total` and `phase1PaidTotal` for this reason.
+
+### Export 彙整統計 Sheet Inlines Validated Literals
+- The export `彙整統計` sheet builds `rowCond`/`clubCond` as inline SQL with **validated literals** (`phase` → `parseInt`, `status` → whitelist array, `club_id` → `parseInt`), NOT `?` placeholders. The condition is repeated across every `COUNT(CASE ...)` column, so `?` placeholders would be duplicated while params are bound once — libSQL binds the rest as NULL and every count silently returns 0.
+- The 報名資料 sheet uses normal parameterized `?` queries (each condition appears once) — leave those as-is.
+
+### Export 報名資料 Sheet Status Mapping
+- `server.js` maps `r.status` for the 報名資料 sheet: `registered → 已報名`, `standby → 候補`, `paid → 已繳費`, everything else → `棄權`. Never collapse `standby` into the `棄權` fallback (past bug #2); `test/review_b_export.js` guards this mapping.
+
 ## File Structure
 ```
 server.js        — Express app + all routes (startServer is sync, not async)
@@ -178,6 +200,7 @@ auth.js          — JWT auth middleware
 public/          — Frontend HTML files
 public/css/      — Shared styles (warm earthy theme)
 uploads/         — Payment proof files (gitignored)
+test/            — regression + simulation scripts (see Verification; *.db gitignored)
 railway.json     — Railway deploy config (Nixpacks builder)
 ```
 
