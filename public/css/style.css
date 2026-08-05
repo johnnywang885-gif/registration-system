@@ -23,18 +23,19 @@ body {
   margin-bottom: 24px;
 }
 
-.site-logo {
-  width: 110px;
-  height: auto;
-  margin-bottom: 10px;
-  display: inline-block;
-}
-
 .header h1 {
   color: #c0714a;
   font-size: 26px;
   font-weight: 700;
   letter-spacing: 0.5px;
+}
+
+.header-logo {
+  display: block;
+  margin: 0 auto 16px;
+  width: 90px;
+  height: auto;
+  mix-blend-mode: darken;
 }
 
 .header p {
@@ -614,10 +615,6 @@ table tr:hover {
     font-size: 22px;
   }
 
-  .site-logo {
-    width: 88px;
-  }
-
   .nav {
     gap: 2px;
     padding-bottom: 10px;
@@ -663,10 +660,6 @@ table tr:hover {
 
   .header h1 {
     font-size: 20px;
-  }
-
-  .site-logo {
-    width: 76px;
   }
 
   .card {
