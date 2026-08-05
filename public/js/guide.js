@@ -69,6 +69,7 @@
     active = true;
     current = 0;
     overlay.classList.add('visible');
+    overlay.style.display = 'block';
     if (launcher) launcher.classList.add('hidden');
     markSeen();
     render();
@@ -78,10 +79,9 @@
     if (!active) return;
     active = false;
     overlay.classList.remove('visible');
+    overlay.style.display = 'none';
     tooltip.classList.add('hidden');
     arrow.classList.add('hidden');
-    spotlight.style.width = '0';
-    spotlight.style.height = '0';
     if (launcher) launcher.classList.remove('hidden');
   }
 
@@ -158,8 +158,19 @@
 
     const tooltipH = tooltip.offsetHeight;
     const tooltipW = tooltip.offsetWidth;
+    const gap = 56;
     const placement = step.placement || 'bottom';
-    const above = placement === 'top' || (placement === 'bottom' && rect && rect.bottom + tooltipH + 70 > vh && rect.top - tooltipH - 70 > 0);
+    const prefersTop = placement === 'top';
+    let above = false;
+    if (rect) {
+      const fitsAbove = rect.top - tooltipH - gap >= 0;
+      const fitsBelow = rect.bottom + tooltipH + gap <= vh;
+      if (prefersTop) {
+        above = fitsAbove || !fitsBelow;
+      } else {
+        above = !fitsBelow && fitsAbove;
+      }
+    }
 
     tooltip.classList.toggle('guide-tooltip-top', above);
     tooltip.classList.remove('hidden');
@@ -175,7 +186,7 @@
 
     let y;
     if (rect) {
-      y = above ? rect.top - tooltipH - 64 : rect.bottom + 64;
+      y = above ? rect.top - tooltipH - gap : rect.bottom + gap;
     } else {
       y = vh / 2;
     }
