@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>區會報名系統</title>
   <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="/css/guide.css">
 </head>
 <body>
   <div class="container">
@@ -29,7 +30,7 @@
           <input type="password" id="password" placeholder="請輸入密碼" required>
         </div>
         <div id="errorMsg" class="alert alert-error hidden"></div>
-        <button type="submit" class="btn btn-primary" style="width: 100%;">登入</button>
+        <button type="submit" class="btn btn-primary" id="loginBtn" style="width: 100%;">登入</button>
       </form>
     </div>
   </div>
@@ -73,5 +74,15 @@
       }
     });
   </script>
+  <script>
+    window.GUIDE_PAGE = 'login';
+    window.GUIDE_STEPS = [
+      { target: '#clubId', title: '輸入社號', text: '帳號為您的社號（如 0001），管理員請輸入 admin。' },
+      { target: '#password', title: '輸入密碼', text: '社團密碼預設為社號的後 4 碼，管理員使用管理密碼登入。' },
+      { target: '#loginBtn', title: '點擊登入', text: '按下「登入」後，就會進入報名頁面開始填寫報名。', placement: 'top' },
+      { target: '.nav a[href="/summary"]', title: '查看統計', text: '尚未登入也能到「目前報名統計」頁，隨時查看各社的報名狀況。' }
+    ];
+  </script>
+  <script src="/js/guide.js"></script>
 </body>
 </html>

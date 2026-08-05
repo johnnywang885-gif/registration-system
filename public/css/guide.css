@@ -1,0 +1,261 @@
+/* ==================== 操作導覽 Guide ==================== */
+.guide-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  pointer-events: none;
+}
+
+.guide-overlay.visible {
+  pointer-events: auto;
+}
+
+.guide-spotlight {
+  position: absolute;
+  border-radius: 10px;
+  box-shadow: 0 0 0 9999px rgba(74, 55, 40, 0.55);
+  transition: top 0.25s ease, left 0.25s ease, width 0.25s ease, height 0.25s ease;
+}
+
+.guide-spotlight::before,
+.guide-spotlight::after {
+  content: '';
+  position: absolute;
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.guide-spotlight::before {
+  inset: 0;
+  border: 2px solid #c0714a;
+}
+
+.guide-spotlight::after {
+  inset: -6px;
+  border: 2px solid rgba(192, 113, 74, 0.6);
+  animation: guide-pulse 1.6s ease-out infinite;
+}
+
+@keyframes guide-pulse {
+  0% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1.35);
+    opacity: 0;
+  }
+}
+
+.guide-tooltip {
+  position: fixed;
+  z-index: 10001;
+  width: 320px;
+  max-width: calc(100vw - 32px);
+  background: #fffcf7;
+  border: 1px solid #e8ddd2;
+  border-radius: 12px;
+  box-shadow: 0 10px 40px rgba(74, 55, 40, 0.35);
+  padding: 18px 20px;
+  animation: guide-pop 0.3s ease;
+}
+
+@keyframes guide-pop {
+  0% {
+    opacity: 0;
+    transform: translateY(12px) scale(0.96);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.guide-tooltip-top {
+  animation: guide-pop-top 0.3s ease;
+}
+
+@keyframes guide-pop-top {
+  0% {
+    opacity: 0;
+    transform: translateY(-12px) scale(0.96);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.guide-arrow {
+  position: fixed;
+  z-index: 10001;
+  width: 26px;
+  height: 26px;
+  animation: guide-bounce 1s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.guide-arrow::before {
+  content: '▼';
+  position: absolute;
+  font-size: 26px;
+  color: #c0714a;
+  line-height: 1;
+  text-shadow: 0 3px 8px rgba(74, 55, 40, 0.35);
+}
+
+.guide-arrow.up::before {
+  content: '▲';
+}
+
+@keyframes guide-bounce {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(8px);
+  }
+}
+
+.guide-arrow.up {
+  animation: guide-bounce-up 1s ease-in-out infinite;
+}
+
+@keyframes guide-bounce-up {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-8px);
+  }
+}
+
+.guide-step-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #c0714a;
+  letter-spacing: 0.5px;
+  margin-bottom: 8px;
+}
+
+.guide-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: #4a3728;
+  margin-bottom: 6px;
+}
+
+.guide-text {
+  font-size: 13px;
+  color: #7d6b5d;
+  line-height: 1.7;
+}
+
+.guide-dots {
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+  margin: 14px 0 12px;
+}
+
+.guide-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #e8ddd2;
+  transition: background 0.3s ease, transform 0.3s ease;
+}
+
+.guide-dot.active {
+  background: #c0714a;
+  transform: scale(1.25);
+}
+
+.guide-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.guide-actions .guide-spacer {
+  flex: 1;
+}
+
+.guide-skip {
+  border: none;
+  background: transparent;
+  color: #b5a898;
+  font-size: 13px;
+  cursor: pointer;
+  font-family: inherit;
+  padding: 6px 8px;
+  border-radius: 6px;
+  transition: color 0.2s ease;
+}
+
+.guide-skip:hover {
+  color: #8d7b6b;
+}
+
+.guide-actions .btn {
+  padding: 8px 16px;
+  font-size: 13px;
+}
+
+/* ==================== 常駐重播按鈕 ==================== */
+.guide-launcher {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 9990;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: #c0714a;
+  color: #fff;
+  border: none;
+  border-radius: 40px;
+  padding: 11px 18px;
+  font-size: 14px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  box-shadow: 0 4px 16px rgba(192, 113, 74, 0.45);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.guide-launcher:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 22px rgba(192, 113, 74, 0.55);
+}
+
+.guide-launcher:active {
+  transform: scale(0.96);
+}
+
+.guide-launcher .guide-launcher-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.25);
+  font-size: 13px;
+  line-height: 1;
+}
+
+@media (max-width: 768px) {
+  .guide-tooltip {
+    left: 16px !important;
+    right: 16px;
+    width: auto;
+  }
+
+  .guide-launcher {
+    right: 12px;
+    bottom: 12px;
+    padding: 10px 14px;
+    font-size: 13px;
+  }
+}

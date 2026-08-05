@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>報名系統 - 繳費證明</title>
   <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="/css/guide.css">
 </head>
 <body>
   <div class="container">
@@ -268,5 +269,14 @@
     loadRegistrations();
     loadUploads();
   </script>
+  <script>
+    window.GUIDE_PAGE = 'payment';
+    window.GUIDE_STEPS = [
+      { target: '#dropZone', title: '上傳繳費證明', text: '點擊此區或直接拖曳檔案，支援 JPG、PNG、GIF、PDF（最大 10MB）。' },
+      { target: '#uploadBtn', title: '按下上傳', text: '選好檔案後按下「上傳」，狀態會顯示為「待審核」。' },
+      { target: '#uploadList', title: '追蹤審核狀態', text: '上傳記錄會顯示在這裡，管理員確認後狀態會變成「已確認」。' }
+    ];
+  </script>
+  <script src="/js/guide.js"></script>
 </body>
 </html>

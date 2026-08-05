@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>報名系統 - 報名頁</title>
   <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="/css/guide.css">
   <style>
     .reg-form-card {
       max-width: 680px;
@@ -405,5 +406,16 @@
 
     loadRegistrations();
   </script>
+  <script>
+    window.GUIDE_PAGE = 'register';
+    window.GUIDE_STEPS = [
+      { target: '#name', title: '填寫報名表單', text: '依序填寫職稱、姓名、身分證、生日、手機與餐別等基本資料。' },
+      { target: '#submitBtn', title: '新增報名', text: '資料填妥後，按下「新增報名」送出，就完成一位社員的報名。' },
+      { target: '#countBadge', title: '確認報名名單', text: '送出後會累計在本社報名名單中，狀態顯示「已報名」；超過名額時會變為「候補」。' },
+      { target: '.nav a[href="/payment"]', title: '上傳繳費證明', text: '報名完成後，請到「繳費證明」頁上傳繳費單據，由管理員確認。', placement: 'top' },
+      { target: '.nav a[href="/summary"]', title: '查看報名統計', text: '也可以到「目前報名統計」頁，查看各社目前的報名狀況。', placement: 'top' }
+    ];
+  </script>
+  <script src="/js/guide.js"></script>
 </body>
 </html>

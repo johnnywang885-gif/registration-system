@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>報名系統 - 目前報名統計</title>
   <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="/css/guide.css">
 </head>
 <body>
   <div class="container">
@@ -111,5 +112,14 @@
     const summaryInterval = setInterval(loadSummary, 30000);
     window.addEventListener('beforeunload', () => clearInterval(summaryInterval));
   </script>
+  <script>
+    window.GUIDE_PAGE = 'summary';
+    window.GUIDE_STEPS = [
+      { target: '#totalRegistered', title: '第一階段總報名人數', text: '第一階段截止前顯示「總報名人數」；繳費截止後會自動切換為「已繳費人數」。' },
+      { target: '#totalPhase2', title: '第二階段總報名人數', text: '第一階段截止後開放的第二階段報名人數。' },
+      { target: '#summaryTable', title: '各社報名人數一覽', text: '表格列出各社第一、二階段的報名人數，以及保障名額與候補情形。' }
+    ];
+  </script>
+  <script src="/js/guide.js"></script>
 </body>
 </html>
