@@ -45,8 +45,8 @@
           <tr>
             <th>社號</th>
             <th>社名</th>
-            <th>第一階段</th>
-            <th>第二階段</th>
+            <th id="thPhase1">第一階段</th>
+            <th id="thPhase2">第二階段</th>
             <th>最後登錄時間</th>
           </tr>
         </thead>
@@ -73,7 +73,8 @@
         document.getElementById('totalClubs').textContent = data.summary.length;
 
         const today = data.today;
-        const paymentDeadline = data.settings.payment_deadline;
+        const settings = data.settings;
+        const paymentDeadline = settings.payment_deadline;
         const afterPayment = !!paymentDeadline && today > paymentDeadline;
         if (afterPayment) {
           document.getElementById('totalRegistered').textContent = data.phase1PaidTotal;
@@ -83,6 +84,13 @@
           document.getElementById('totalRegisteredLabel').textContent = '第一階段總報名';
         }
         document.getElementById('totalPhase2').textContent = data.phase2Total;
+
+        const phase1 = settings.phase1_deadline || '';
+        const phase2 = settings.phase2_deadline || '';
+        const phase1Header = phase1 ? `第一階段 (截止: ${phase1})` : '第一階段';
+        const phase2Header = phase2 ? `第二階段 (截止: ${phase2})` : '第二階段';
+        document.getElementById('thPhase1').textContent = phase1Header;
+        document.getElementById('thPhase2').textContent = phase2Header;
 
         const tbody = document.getElementById('summaryBody');
         if (data.summary.length === 0) {

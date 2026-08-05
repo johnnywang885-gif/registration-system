@@ -189,7 +189,7 @@
           </div>
           <div class="form-group">
             <label>生日</label>
-            <input type="date" id="birthday">
+            <input type="text" id="birthday" placeholder="民國年/月/日（如 113/08/15）">
           </div>
         </div>
         <div class="form-row">
@@ -239,6 +239,37 @@
       }[ch]));
     }
 
+    function westernToROC(dateStr) {
+      if (!dateStr) return '';
+      const parts = dateStr.split('-');
+      if (parts.length !== 3) return dateStr;
+      const year = parseInt(parts[0]) - 1911;
+      return `${year}/${parts[1]}/${parts[2]}`;
+    }
+
+    function rocToWestern(rocStr) {
+      if (!rocStr) return '';
+      const cleaned = rocStr.replace(/\//g, '-');
+      const parts = cleaned.split('-');
+      if (parts.length !== 3) return '';
+      const year = parseInt(parts[0]) + 1911;
+      return `${year}-${parts[1].padStart(2, '0')}-${parts[2].padStart(2, '0')}`;
+    }
+
+    function validateROCDate(rocStr) {
+      if (!rocStr) return true;
+      const parts = rocStr.split('/');
+      if (parts.length !== 3) return false;
+      const year = parseInt(parts[0]);
+      const month = parseInt(parts[1]);
+      const day = parseInt(parts[2]);
+      if (isNaN(year) || isNaN(month) || isNaN(day)) return false;
+      if (year < 1 || year > 200) return false;
+      if (month < 1 || month > 12) return false;
+      if (day < 1 || day > 31) return false;
+      return true;
+    }
+
     function showAlert(msg, type = 'success') {
       const box = document.getElementById('alertBox');
       box.className = `alert alert-${type}`;
@@ -279,7 +310,7 @@
           </div>
           <div class="reg-card-details">
             ${r.id_card ? `<span class="reg-card-field"><strong>身分證</strong> ${esc(r.id_card)}</span>` : ''}
-            ${r.birthday ? `<span class="reg-card-field"><strong>生日</strong> ${esc(r.birthday)}</span>` : ''}
+            ${r.birthday ? `<span class="reg-card-field"><strong>生日</strong> ${esc(westernToROC(r.birthday))}</span>` : ''}
             ${r.phone ? `<span class="reg-card-field"><strong>手機</strong> ${esc(r.phone)}</span>` : ''}
             ${r.meal_type ? `<span class="reg-card-field"><strong>餐別</strong> ${esc(r.meal_type)}</span>` : ''}
           </div>
@@ -329,7 +360,7 @@
       document.getElementById('position').value = reg.position || '';
       document.getElementById('name').value = reg.name;
       document.getElementById('idCard').value = reg.id_card || '';
-      document.getElementById('birthday').value = reg.birthday || '';
+      document.getElementById('birthday').value = westernToROC(reg.birthday || '');
       document.getElementById('phone').value = reg.phone || '';
       document.getElementById('mealType').value = reg.meal_type || '';
       document.getElementById('submitBtn').textContent = '更新報名';
@@ -349,11 +380,16 @@
     document.getElementById('regForm').addEventListener('submit', async (e) => {
       e.preventDefault();
       const btn = document.getElementById('submitBtn');
+      const birthdayInput = document.getElementById('birthday').value.trim();
+      if (birthdayInput && !validateROCDate(birthdayInput)) {
+        showAlert('生日格式不正確，請使用民國年/月/日格式（如 113/08/15）', 'error');
+        return;
+      }
       const body = {
         position: document.getElementById('position').value,
         name: document.getElementById('name').value,
         id_card: document.getElementById('idCard').value,
-        birthday: document.getElementById('birthday').value,
+        birthday: rocToWestern(birthdayInput),
         phone: document.getElementById('phone').value,
         meal_type: document.getElementById('mealType').value
       };

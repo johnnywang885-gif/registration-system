@@ -196,6 +196,14 @@
       }[ch]));
     }
 
+    function westernToROC(dateStr) {
+      if (!dateStr) return '';
+      const parts = dateStr.split('-');
+      if (parts.length !== 3) return dateStr;
+      const year = parseInt(parts[0]) - 1911;
+      return `${year}/${parts[1]}/${parts[2]}`;
+    }
+
     function statusBadge(status) {
       const map = { registered: '已報名', paid: '已繳費', forfeited: '棄權', standby: '候補' };
       return `<span class="badge badge-${status}">${map[status] || status}</span>`;
@@ -243,7 +251,7 @@
                     <td>${esc(r.position || '-')}</td>
                     <td>${esc(r.name)}</td>
                     <td>${esc(r.id_card || '-')}</td>
-                    <td>${esc(r.birthday || '-')}</td>
+                    <td>${esc(westernToROC(r.birthday) || '-')}</td>
                     <td>${esc(r.phone || '-')}</td>
                     <td>${esc(r.meal_type || '-')}</td>
                     <td>第${r.phase}階段</td>
