@@ -23,6 +23,13 @@ body {
   margin-bottom: 24px;
 }
 
+.site-logo {
+  width: 110px;
+  height: auto;
+  margin-bottom: 10px;
+  display: inline-block;
+}
+
 .header h1 {
   color: #c0714a;
   font-size: 26px;
@@ -607,6 +614,10 @@ table tr:hover {
     font-size: 22px;
   }
 
+  .site-logo {
+    width: 88px;
+  }
+
   .nav {
     gap: 2px;
     padding-bottom: 10px;
@@ -652,6 +663,10 @@ table tr:hover {
 
   .header h1 {
     font-size: 20px;
+  }
+
+  .site-logo {
+    width: 76px;
   }
 
   .card {
