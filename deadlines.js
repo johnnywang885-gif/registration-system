@@ -92,11 +92,16 @@ async function runEnforcement() {
   }
 }
 
+let lastEnforceTime = 0;
+const ENFORCE_INTERVAL = 5000;
+
 async function enforceDeadlines(req, res, next) {
-  try {
-    await runEnforcement();
-  } catch (err) {
-    console.error('enforceDeadlines error:', err.message);
+  const now = Date.now();
+  if (now - lastEnforceTime > ENFORCE_INTERVAL) {
+    lastEnforceTime = now;
+    runEnforcement().catch(err => {
+      console.error('enforceDeadlines error:', err.message);
+    });
   }
   next();
 }
