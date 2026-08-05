@@ -39,6 +39,11 @@
         <button type="submit" class="btn btn-primary" id="loginBtn" style="width: 100%;">登入</button>
       </form>
     </div>
+
+    <div class="card" id="rulesCard" style="max-width: 680px; margin: 0 auto;">
+      <h2 class="mb-20" style="font-size:18px; color:#4a3728;">報名規則</h2>
+      <div id="rulesContent"><p style="color:#b5a898;">載入中...</p></div>
+    </div>
   </div>
 
   <script>
@@ -79,6 +84,57 @@
         errorMsg.classList.remove('hidden');
       }
     });
+  </script>
+  <script>
+    async function loadRules() {
+      const el = document.getElementById('rulesContent');
+      try {
+        const res = await fetch('/api/summary');
+        if (!res.ok) throw new Error('API error');
+        const data = await res.json();
+        const s = data.settings || {};
+        const today = data.today || '';
+
+        const p1d = s.phase1_deadline || '';
+        const payd = s.payment_deadline || '';
+        const p2d = s.phase2_deadline || '';
+        const guaranteed = s.guaranteed_quota || '10';
+        const totalQuota = s.phase1_total_quota || '160';
+
+        let phase = 'closed';
+        if (p2d && today > p2d) phase = 'closed';
+        else if (p1d && today > p1d) {
+          if (payd && today <= payd) phase = 'phase1_closed';
+          else phase = 'phase2';
+        } else phase = 'phase1';
+
+        const phaseLabel = {
+          phase1: '第一階段報名中',
+          phase1_closed: '第一階段已截止（待繳費）',
+          phase2: '第二階段報名中',
+          closed: '報名已截止'
+        };
+        const badgeColor = {
+          phase1: '#5a8c5a',
+          phase1_closed: '#c9944a',
+          phase2: '#5c7cb8',
+          closed: '#b85c4f'
+        };
+
+        el.innerHTML = `
+          <div style="text-align:center; margin-bottom:20px;">
+            <span style="display:inline-block; padding:6px 18px; border-radius:20px; font-size:14px; font-weight:600; color:#fff; background:${badgeColor[phase]};">${phaseLabel[phase]}</span>
+          </div>
+          <ul style="padding-left:20px; line-height:2; font-size:14px; color:#5a4636;">
+            <li><strong>第一階段報名</strong>：即日起至 <strong>${p1d || '—'}</strong>；每社保障 ${guaranteed} 名，超過部分列為候補；總名額上限 ${totalQuota} 人。</li>
+            <li><strong>繳費</strong>：請於 <strong>${payd || '—'}</strong> 前上傳繳費證明，未繳費視同未報名（自動棄權）。</li>
+            <li><strong>第二階段報名</strong>：於 <strong>${p2d || '—'}</strong> 前，總名額未滿 ${totalQuota} 人時可繼續報名，超過列為候補。</li>
+          </ul>`;
+      } catch (err) {
+        el.innerHTML = '<p style="color:#b5a898;">無法取得報名規則，請稍後再試。</p>';
+      }
+    }
+    loadRules();
   </script>
   <script>
     window.GUIDE_PAGE = 'login';
