@@ -32,7 +32,7 @@ body {
 
 .header-logo {
   display: block;
-  width: 80px;
+  width: 40px;
   height: auto;
   mix-blend-mode: darken;
   flex-shrink: 0;
@@ -42,11 +42,16 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 16px;
+  gap: 26px;
 }
 
 .header-text {
   text-align: left;
+}
+
+.header-logo-spacer {
+  width: 40px;
+  flex-shrink: 0;
 }
 
 .header p {
