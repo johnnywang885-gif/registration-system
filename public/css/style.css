@@ -32,7 +32,7 @@ body {
 
 .header-logo {
   display: block;
-  width: 40px;
+  width: 52px;
   height: auto;
   mix-blend-mode: darken;
   flex-shrink: 0;
@@ -50,7 +50,7 @@ body {
 }
 
 .header-logo-spacer {
-  width: 40px;
+  width: 52px;
   flex-shrink: 0;
 }
 
