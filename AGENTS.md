@@ -78,7 +78,8 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 - Auto-promotion targets **Phase 1** standby only (by login order, filling to quota). Phase 2 standby must be promoted manually (`POST /api/admin/promote/:id`), both are bound by the 160 cap.
 
 ### Deadline Enforcement (`deadlines.js`)
-- `enforceDeadlines` middleware runs on **every `/api` request** + once at startup after DB ready. Transitions are idempotent (4 windows):
+- `enforceDeadlines` middleware runs on **every `/api` request** (non-blocking, background) + once at startup after DB ready. 5-second debounce prevents redundant runs on rapid requests.
+- Transitions are idempotent (4 windows):
   1. `today > payment_deadline` → clubs WITHOUT an `approved` payment proof: Phase 1 `registered` → `forfeited` (未繳費視同未報名)
   2. `phase1_deadline < today <= payment_deadline` → auto-promote **ALL** Phase 1 standby (any club) by login order until occupancy = quota
   3. `payment_deadline < today <= phase2_deadline` → auto-promote ONLY Phase 1 standby of clubs WITH an `approved` proof (`requirePaidClub`), by login order until occupancy = quota
@@ -96,12 +97,15 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 
 ### Frontend (`public/`)
 - Pure HTML/CSS/JS, no framework, no build step
-- `index.html` — login page
-- `register.html` — registration form + card-based list
+- `index.html` — login page + 報名規則卡片（動態截止日、目前階段徽章）
+- `register.html` — registration form + card-based list（生日欄位民國年格式）
 - `payment.html` — payment proof upload
-- `summary.html` — public stats
+- `summary.html` — public stats（表格標題顯示各階段截止日）
 - `admin.html` — admin panel with tabs (registrations, payments, clubs, settings, standby queue)
 - `css/style.css` — shared styles (warm earthy theme: `#f5f0eb` bg, `#c0714a` primary)
+- `css/guide.css` — guided tour overlay styles (spotlight, tooltip, pulse/bounce animations)
+- `js/guide.js` — guided tour engine (no dependencies, vanilla JS; first-visit auto-play + replay button)
+- `images/culroc-logo.jpg` — CULROC logo（CSS `mix-blend-mode: darken` 模擬去背）
 
 ## Railway Deployment
 
@@ -134,7 +138,7 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 
 ## API Routes
 - `POST /api/login` — returns JWT token
-- `GET /api/summary` — public stats (no auth): per-club `phase1_registered/standby/paid/phase1_total/phase2_count` + totals `phase1Total`, `phase1PaidTotal`, `phase2Total`
+- `GET /api/summary` — public stats (no auth): per-club `phase1_registered/standby/paid/phase1_total/phase2_count` + totals `phase1Total`, `phase1PaidTotal`, `phase2Total` + `settings` (deadlines, quotas)
 - `POST /api/registrations` — create registration (auth required; phase & status derived from dates, auto-standby logic)
 - `GET /api/my-registrations` — list club's registrations (auth required)
 - `GET /api/admin/all` — all registrations with filters: club_id, phase, status (admin only)
@@ -191,14 +195,30 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 ### Export 報名資料 Sheet Status Mapping
 - `server.js` maps `r.status` for the 報名資料 sheet: `registered → 已報名`, `standby → 候補`, `paid → 已繳費`, everything else → `棄權`. Never collapse `standby` into the `棄權` fallback (past bug #2); `test/review_b_export.js` guards this mapping.
 
+### Birthday Field (民國年)
+- Backend stores dates in Western format (`YYYY-MM-DD`)
+- Frontend (`register.html`, `admin.html`) converts to ROC format for display (`westernToROC()`) and back for storage (`rocToWestern()`)
+- Input format on register page: `民國年/月/日` (e.g., `113/08/15`)
+
+### Summary Table Deadline Headers
+- `summary.html` fetches `/api/summary` and dynamically updates table headers to show deadline dates (e.g., `第一階段 (截止: 2026-09-20)`)
+
+### Guided Tour (操作導覽)
+- `js/guide.js` + `css/guide.js` provide a reusable guided tour engine
+- Steps defined per page via `window.GUIDE_STEPS` and `window.GUIDE_PAGE`
+- First-visit auto-play (localStorage `guideSeen_<page>`) + persistent replay button
+- Uses `mix-blend-mode: darken` on spotlight for visual highlight; tooltip auto-flips to avoid covering targets
+
 ## File Structure
 ```
 server.js        — Express app + all routes (startServer is sync, not async)
 database.js      — Turso cloud operations (@libsql/client), db starts as null
-deadlines.js     — date-driven phase state machine + auto promote/forfeit (enforceDeadlines middleware)
+deadlines.js     — date-driven phase state machine + auto promote/forfeit (enforceDeadlines middleware, non-blocking with debounce)
 auth.js          — JWT auth middleware
 public/          — Frontend HTML files
-public/css/      — Shared styles (warm earthy theme)
+public/css/      — Shared styles (style.css + guide.css)
+public/js/       — Guide tour engine (guide.js)
+public/images/   — Logo assets (culroc-logo.jpg)
 uploads/         — Payment proof files (gitignored)
 test/            — regression + simulation scripts (see Verification; *.db gitignored)
 railway.json     — Railway deploy config (Nixpacks builder)

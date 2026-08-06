@@ -78,7 +78,9 @@ async function setSettings(s) {
 }
 
 async function trigger() {
+  await new Promise(r => setTimeout(r, 5100));
   await fetch(`${BASE}/api/summary`);
+  await new Promise(r => setTimeout(r, 800));
 }
 
 async function counts(clubId) {

@@ -168,7 +168,9 @@ async function main() {
   console.log('\n② 第二階段開放後首次觸發期程檢查（enforcement）：');
   console.log('   → 未繳費社團棄權：無（一階社團全數已繳費）');
   console.log('   → 自動遞補「已繳費社團」的一階候補 6 人（優先於二階報名者）');
+  await new Promise(r => setTimeout(r, 5100));
   await fetch(`${BASE}/api/summary`);
+  await new Promise(r => setTimeout(r, 800));
   rows = await perClub();
   await printTable('  遞補後狀態', rows);
 
