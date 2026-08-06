@@ -232,6 +232,8 @@ public/images/   — Logo assets (culroc-logo.jpg)
 uploads/         — Payment proof files (gitignored)
 test/            — regression + simulation scripts (see Verification; *.db gitignored)
 test/launch-chrome.ps1 — one-command Chrome + remote-debugging launcher for MCP browser testing
+docs/影片生成素材.md — Gemini Notebook 影片素材（分鏡＋字幕逐字稿＋準確資料附錄）
+docs/報名系統簡介.html — 漫畫風動畫簡報（原始檔）；**public/intro.html 是它的部署副本，改動後務必 `Copy-Item docs/報名系統簡介.html public/intro.html` 同步**，不然網站分享的是舊版
 railway.json     — Railway deploy config (Nixpacks builder)
 ```
 
