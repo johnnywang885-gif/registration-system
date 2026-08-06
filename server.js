@@ -1,6 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const multer = require('multer');
+const rateLimit = require('express-rate-limit');
 const path = require('path');
 const fs = require('fs');
 const bcrypt = require('bcryptjs');
@@ -12,8 +13,17 @@ const { taipeiToday, phaseState, getSettings, occupancy, promoteStandby, forfeit
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+app.set('trust proxy', 1);
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
+
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: '嘗試次數過多，請 15 分鐘後再試' }
+});
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
@@ -74,7 +84,7 @@ function startServer() {
   app.use('/api', enforceDeadlines);
 
   // ===== Auth API =====
-  app.post('/api/login', async (req, res) => {
+  app.post('/api/login', loginLimiter, async (req, res) => {
     try {
       const { clubId, password } = req.body;
       if (!clubId || !password) {
