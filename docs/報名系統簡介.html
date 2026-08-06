@@ -372,10 +372,20 @@
   @keyframes blink { 50% { opacity: 0; } }
 
   .progress { position: fixed; top: 0; left: 0; height: 10px; background: var(--red); z-index: 60; width: 0; transition: width .5s ease; border-bottom: 3px solid var(--ink); }
+
+  .auto-hint {
+    position: fixed; left: 50%; bottom: 108px; transform: translateX(-50%);
+    background: var(--ink); color: #fff; padding: 9px 20px; border-radius: 999px;
+    font-size: 13px; font-weight: 800; letter-spacing: 1px;
+    box-shadow: 3px 3px 0 rgba(0,0,0,.35); z-index: 70;
+    opacity: 0; pointer-events: none; transition: opacity .5s ease; white-space: nowrap;
+  }
+  .auto-hint.show { opacity: 1; }
 </style>
 </head>
 <body>
 <div class="progress" id="progress"></div>
+<div class="auto-hint" id="autoHint">自動播放中，點一下畫面可跳下一頁</div>
 <div class="stage" id="stage">
 
   <!-- 1 封面 -->
@@ -607,7 +617,7 @@
   let cur = 0;
   let auto = true;
   let timer = null;
-  const DURATION = 9000;
+  const DURATION = [6500, 7500, 7500, 7500, 5000, 5000, 5000, 5000, 7500, 10000];
 
   const dotsWrap = document.getElementById('dots');
   slides.forEach((_, i) => {
@@ -618,8 +628,18 @@
   });
   const dots = Array.from(dotsWrap.children);
 
-  function renderProgress() {
-    document.getElementById('progress').style.width = ((cur + 1) / N * 100) + '%';
+  function startSlideProgress() {
+    const bar = document.getElementById('progress');
+    bar.style.transition = 'none';
+    bar.style.width = '0%';
+    void bar.offsetWidth;
+    bar.style.transition = 'width ' + DURATION[cur] + 'ms linear';
+    bar.style.width = '100%';
+  }
+  function freezeSlideProgress() {
+    const bar = document.getElementById('progress');
+    bar.style.transition = 'none';
+    bar.style.width = '100%';
   }
   function syncControls() {
     dots.forEach((d, i) => d.classList.toggle('active', i === cur));
@@ -634,16 +654,18 @@
     cur = i;
     slides[cur].classList.add('active');
     syncControls();
-    renderProgress();
     runSlideEffects();
     if (auto) restartTimer();
+    else freezeSlideProgress();
+    showAutoHint();
   }
   function next() { if (cur < N - 1) go(cur + 1); }
   function prev() { if (cur > 0) go(cur - 1); }
 
   function restartTimer() {
     clearTimeout(timer);
-    timer = setTimeout(() => { if (cur < N - 1) go(cur + 1); }, DURATION);
+    startSlideProgress();
+    timer = setTimeout(() => { if (cur < N - 1) go(cur + 1); }, DURATION[cur]);
   }
   document.getElementById('autoBtn').addEventListener('click', function () {
     auto = !auto;
@@ -651,6 +673,7 @@
     this.textContent = auto ? '自動播放' : '手動模式';
     clearTimeout(timer);
     if (auto) restartTimer();
+    else freezeSlideProgress();
   });
   document.getElementById('nextBtn').addEventListener('click', next);
   document.getElementById('prevBtn').addEventListener('click', prev);
@@ -698,11 +721,20 @@
     slide.querySelectorAll('.stat-num[data-count]').forEach(countUp);
   }
 
+  let hintTimer = null;
+  function showAutoHint() {
+    if (!auto || cur !== 0) return;
+    const hint = document.getElementById('autoHint');
+    clearTimeout(hintTimer);
+    hint.classList.add('show');
+    hintTimer = setTimeout(() => hint.classList.remove('show'), 4000);
+  }
+
   slides[0].classList.add('active');
   syncControls();
-  renderProgress();
   runSlideEffects();
   restartTimer();
+  showAutoHint();
 })();
 </script>
 </body>
