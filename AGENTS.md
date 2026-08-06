@@ -16,7 +16,7 @@ No lint, typecheck, or test scripts exist. This is a plain JS project with no bu
 ## Verification (no test framework)
 - Syntax check: `node --check server.js deadlines.js database.js auth.js`
 - `@libsql/client` accepts `file:` URLs, so the whole stack (database.js + deadlines.js + server.js) runs against a local SQLite file: set `TURSO_DATABASE_URL=file:C:/abs/path.db`, `TURSO_AUTH_TOKEN=`, then call `initDatabase()` + `runEnforcement()` directly or boot `server.js`.
-- Real-data offline test (never touches production): login as admin (`admin`/`admin123`) → `GET /api/admin/backup` returns full JSON (`clubs`, `registrations`, `payment_proofs`, `settings`) → seed it into a local `file:` copy → run `deadlines.js` enforcement against the copy. Do NOT point enforcement at the real Turso DB.
+- Real-data offline test (never touches production): login as admin (use the real production password — see Auth section; the default `admin123` works only on fresh local DBs) → `GET /api/admin/backup` returns full JSON (`clubs`, `registrations`, `payment_proofs`, `settings`) → seed it into a local `file:` copy → run `deadlines.js` enforcement against the copy. Do NOT point enforcement at the real Turso DB.
 - `deadlines.js` `taipeiToday()` always uses the real Taipei date — to simulate other phases, edit the `settings` rows (deadline dates) in the local copy, not the clock.
 - Windows gotcha: a process holding a `file:` DB (e.g. a spawned `server.js`) locks the file; kill the process before deleting/reopening it.
 - Windows console mangles Chinese unless UTF-8: in PowerShell run `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8` before `node`.
@@ -27,8 +27,15 @@ No lint, typecheck, or test scripts exist. This is a plain JS project with no bu
 - `review_c_backup.js` — restores a real backup JSON into a local `file:` copy and runs `runEnforcement()` as a no-op sanity check (p2 already passed); never touches the live Turso DB.
 - `review_d_rule_timeline.js` — boots real server on PORT 34892, drives a full 7-stage timeline over HTTP (phase-1 overflow → promote → pay → forfeit → phase-2 standby / manual promote).
 - `sim_phase2_144_30.js` — boots real server on PORT 34893; scenario simulation (Phase 1: 144 paid + paid-club standby; Phase 2: 30 incl. those standby) printing per-club tables. Reuse as a template for "what if" simulations.
+- `sim_185_30.js` — boots real server on PORT 34904; scenario simulation (185 Phase-1 registrations incl. 5 big clubs over the 10-seat guarantee → 50 unpaid forfeits → 30 Phase-2 registrations) and keeps the DB alive for browser verification. Reuse as template too.
 - Run **one at a time, sequentially** — each boots its own server on a distinct port against a throwaway `file:` DB in `test/*.db` (gitignored). Pass = output ends with `PASS` / `全部階段 PASS`.
 - `phase2_standby.js` / `simulate.js` are stale one-off scripts still driven by the ignored `current_phase` setting — ignore them.
+
+### MCP browser testing (chrome-devtools-mcp)
+- `opencode.json` connects via `--browserUrl http://127.0.0.1:9222`; **before using MCP tools in a new session, run `pwsh test/launch-chrome.ps1`** (spawns headless Chrome with a custom profile + waits until port 9222 is ready).
+- `test/.chrome-profile/` is Chrome's profile dir (gitignored); don't delete it while Chrome is running.
+- Driving the UI with `evaluate_script` (set input values + dispatch events + click) is far more reliable than click/fill MCP tools — the guided-tour overlay can also block click targets; close it first via its 「關閉導覽」 button.
+- Temporary throwaway scripts follow `test/_*.js` (e.g. `_verify_jwt_pass.js`) and are deleted right after use.
 
 ## Architecture
 
@@ -92,7 +99,7 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 ### Auth (`auth.js`)
 - JWT middleware: `authMiddleware` for protected routes, `adminMiddleware` for admin-only
 - Tokens expire in 24h. Frontend stores in `localStorage`
-- Default admin: `admin` / `admin123`
+- Default admin `admin`/`admin123` exists **only in fresh local `file:` DBs** (initialized by `database.js`); the production password was changed at go-live — never assume the default against the live Turso DB. Admins change their own password via `PUT /api/admin/change-password` (系統設定 tab).
 - Club passwords default to last 4 digits of `club_id`
 
 ### Frontend (`public/`)
@@ -114,7 +121,7 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 |-----|----------|-------|
 | `TURSO_DATABASE_URL` | Yes | `libsql://...` format |
 | `TURSO_AUTH_TOKEN` | Yes | JWT from `turso db tokens create` |
-| `JWT_SECRET` | No (建議設定) | Falls back to random ephemeral key — 重啟後所有登入失效；若不設定會印出警告 |
+| `JWT_SECRET` | No | 未設時啟動自動生成 64-hex 並存入 Turso `settings` 表（key `jwt_secret`），重啟後從 DB 載回，登入不失效；無需手動設定 |
 | `PORT` | No | Set automatically by Railway |
 
 **Railway API gotcha**: `variableUpsert` mutation MUST include `serviceId` param, otherwise the variable is set at project level but not exposed to the running service. Query `services` to get the service ID first.
@@ -123,6 +130,8 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 - Push to `master` → Railway auto-deploys via GitHub webhook
 - Healthcheck: `GET /health` must return 200 within 30s
 - Current production URL: `https://registration-system-production-4e05.up.railway.app` (`/health` and `/api/summary` are public for quick checks)
+- **uploads/ is NOT persistent on Railway**: every deploy/restart wipes uploaded payment-proof files (DB rows keep the `file_path`, but `GET /api/payment/file/:id` then 404s). Backup JSON does NOT include file contents. Accepted as-is — tell admins clubs can re-upload.
+- **Detect whether a deploy actually switched versions**: `POST /api/login` with a ~200KB body → new code (10mb `express.json`) returns 401, old code (100kb limit) returns 500. Useful because rolling deploys may never drop `/health`.
 - The `railway` CLI is installed but **not linked/logged in** in this environment (`railway whoami` / `railway variables` print nothing). Get real env vars/creds from the Railway dashboard — do not assume `railway` commands work.
 - If deploy fails with "Healthcheck failure" or "Application failed to respond":
   - Check that routes are registered before `initDatabase()`
@@ -145,6 +154,7 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 - `PUT /api/admin/payment/:id` — mark registration as paid (admin only)
 - `PUT /api/admin/forfeit/:id` — mark registration as forfeited (admin only)
 - `PUT /api/admin/reset-status/:id` — reset registration to registered (admin only)
+- `PUT /api/admin/change-password` — admin changes own password (body: `currentPassword` + `newPassword` ≥ 8 chars; UI in 系統設定 tab)
 - `POST /api/admin/promote` — auto-promote Phase 1 standby to fill quota (admin only)
 - `GET /api/admin/standby-list` — list standby from BOTH phases (admin only)
 - `POST /api/admin/promote/:id` — manual promote single standby, respects 160 cap (admin only)
@@ -221,6 +231,7 @@ public/js/       — Guide tour engine (guide.js)
 public/images/   — Logo assets (culroc-logo.jpg)
 uploads/         — Payment proof files (gitignored)
 test/            — regression + simulation scripts (see Verification; *.db gitignored)
+test/launch-chrome.ps1 — one-command Chrome + remote-debugging launcher for MCP browser testing
 railway.json     — Railway deploy config (Nixpacks builder)
 ```
 
