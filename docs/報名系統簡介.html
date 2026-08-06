@@ -47,15 +47,16 @@
     position: absolute; inset: 0;
     display: flex; flex-direction: column;
     align-items: center; justify-content: center;
-    padding: 44px 20px 92px;
+    padding: 44px 20px calc(92px + env(safe-area-inset-bottom, 0px));
     opacity: 0; pointer-events: none;
     transform: scale(.93) rotate(.6deg);
     transition: opacity .5s ease, transform .5s cubic-bezier(.2,1.5,.4,1);
     z-index: 1;
+    overflow-y: auto; overscroll-behavior: contain;
   }
   .slide.active { opacity: 1; pointer-events: auto; transform: scale(1) rotate(0); }
 
-  .inner { width: min(880px, 100%); position: relative; z-index: 2; }
+  .inner { width: min(880px, 100%); position: relative; z-index: 2; margin: auto; }
 
   /* ===== 漫畫進入動畫 ===== */
   .anim { opacity: 0; }
@@ -150,14 +151,18 @@
   }
   .comic-title {
     font-size: clamp(34px, 6vw, 58px); font-weight: 900; line-height: 1.2;
-    color: var(--red); -webkit-text-stroke: 2px var(--ink);
-    text-shadow: 4px 4px 0 var(--yellow), 7px 7px 0 var(--ink);
+    color: var(--red);
+    text-shadow: -2px -2px 0 var(--ink), 2px -2px 0 var(--ink), -2px 2px 0 var(--ink), 2px 2px 0 var(--ink),
+      0 -2px 0 var(--ink), 0 2px 0 var(--ink), -2px 0 0 var(--ink), 2px 0 0 var(--ink),
+      4px 4px 0 var(--yellow), 7px 7px 0 var(--ink);
     letter-spacing: 2px; display: inline-block;
   }
   .section-title {
     display: inline-block;
     font-size: clamp(28px, 4.6vw, 42px); font-weight: 900;
-    color: var(--white); -webkit-text-stroke: 2px var(--ink);
+    color: var(--white);
+    text-shadow: -2px -2px 0 var(--ink), 2px -2px 0 var(--ink), -2px 2px 0 var(--ink), 2px 2px 0 var(--ink),
+      0 -2px 0 var(--ink), 0 2px 0 var(--ink), -2px 0 0 var(--ink), 2px 0 0 var(--ink);
     background: var(--red); padding: 6px 22px 8px; transform: rotate(-1.5deg);
     border: 3px solid var(--ink); box-shadow: 5px 5px 0 var(--ink);
   }
@@ -218,7 +223,7 @@
   .stat-card.c-y { background: var(--yellow); }
   .stat-card.c-r { background: #FFE3E7; }
   .stat-card.c-b { background: #DFF0FF; }
-  .stat-num { font-size: clamp(36px, 5vw, 50px); font-weight: 900; color: var(--red); -webkit-text-stroke: 2px var(--ink); text-shadow: 3px 3px 0 var(--yellow); }
+  .stat-num { font-size: clamp(36px, 5vw, 50px); font-weight: 900; color: var(--red); text-shadow: -2px -2px 0 var(--ink), 2px -2px 0 var(--ink), -2px 2px 0 var(--ink), 2px 2px 0 var(--ink), 0 -2px 0 var(--ink), 0 2px 0 var(--ink), -2px 0 0 var(--ink), 2px 0 0 var(--ink), 3px 3px 0 var(--yellow); }
   .stat-label { font-size: 13px; font-weight: 800; margin-top: 6px; line-height: 1.5; }
   .stat-ico { font-size: 32px; }
   .rule-list { list-style: none; margin-top: 22px; display: grid; gap: 12px; }
@@ -312,7 +317,9 @@
 
   .thanks {
     display: inline-block; font-size: clamp(22px, 3.6vw, 30px); font-weight: 900; margin-top: 26px;
-    color: var(--white); -webkit-text-stroke: 2px var(--ink); background: var(--teal);
+    color: var(--white); background: var(--teal);
+    text-shadow: -2px -2px 0 var(--ink), 2px -2px 0 var(--ink), -2px 2px 0 var(--ink), 2px 2px 0 var(--ink),
+      0 -2px 0 var(--ink), 0 2px 0 var(--ink), -2px 0 0 var(--ink), 2px 0 0 var(--ink);
     padding: 8px 26px; border: 3px solid var(--ink); transform: rotate(-1.5deg); box-shadow: 5px 5px 0 var(--ink);
   }
   .contact { font-size: 14px; font-weight: 800; margin-top: 12px; line-height: 1.9; color: var(--ink); }
@@ -324,6 +331,7 @@
     border: 4px solid var(--ink); border-radius: 999px;
     box-shadow: 6px 6px 0 var(--ink); text-decoration: none; transform: rotate(-1.5deg);
     transition: transform .15s, box-shadow .15s;
+    touch-action: manipulation; -webkit-tap-highlight-color: transparent;
   }
   .cta-btn:hover { transform: scale(1.08) rotate(1deg); box-shadow: 4px 4px 0 var(--ink); }
   .cta-btn:active { transform: translate(4px, 4px); box-shadow: 0 0 0 var(--ink); }
@@ -337,8 +345,11 @@
   .controls {
     position: fixed; left: 0; right: 0; bottom: 0; z-index: 50;
     display: flex; align-items: center; justify-content: center; gap: 16px;
-    padding: 16px; background: linear-gradient(transparent, rgba(27,27,27,.12) 30%);
+    padding: 16px calc(16px + env(safe-area-inset-right, 0px)) calc(16px + env(safe-area-inset-bottom, 0px)) calc(16px + env(safe-area-inset-left, 0px));
+    background: linear-gradient(transparent, rgba(27,27,27,.12) 30%);
+    pointer-events: none;
   }
+  .controls .ctrl-btn, .controls .dot, .controls .auto-toggle { pointer-events: auto; }
   .ctrl-btn {
     width: 50px; height: 50px; border-radius: 50%; border: 4px solid var(--ink);
     background: var(--yellow); color: var(--ink); font-size: 20px; font-weight: 900; cursor: pointer;
@@ -574,7 +585,7 @@
       <div class="thanks anim" style="--d:1.1s">祝大家報名順利！</div>
       <p class="contact anim" style="--d:1.25s">如有問題，請洽督導及區會幹事<br>記得於 2026-09-30 前完成繳費，未繳費將自動棄權</p>
       <div class="anim" style="--d:1.4s">
-        <a class="cta-btn" href="https://registration-system-production-4e05.up.railway.app/" target="_blank" rel="noopener"><span class="cta-txt">🚀 立刻去報名！</span></a>
+        <a class="cta-btn" href="/"><span class="cta-txt">🚀 立刻去報名！</span></a>
       </div>
     </div>
   </section>
@@ -649,7 +660,7 @@
     if (e.key === ' ') { e.preventDefault(); next(); }
   });
   document.querySelector('.stage').addEventListener('click', (e) => {
-    if (e.target.closest('.ctrl-btn, .dot')) return;
+    if (e.target.closest('.ctrl-btn, .dot, .cta-btn')) return;
     next();
   });
 
