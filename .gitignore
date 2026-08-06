@@ -5,3 +5,4 @@ uploads/payments/*
 .env
 *.log
 test/*.db
+test/.chrome-profile/
