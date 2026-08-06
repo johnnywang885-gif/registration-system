@@ -14,7 +14,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.set('trust proxy', 1);
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 const loginLimiter = rateLimit({
@@ -208,36 +208,36 @@ function startServer() {
       const { position, name, id_card, birthday, phone, meal_type } = req.body;
       if (!name) return res.status(400).json({ error: '請輸入姓名' });
 
-      let regPhase;
-      let newStatus;
+      let insertSql;
+      let insertArgs;
 
       if (state === 'phase1') {
-        regPhase = 1;
-        const current = await occupancy(getDb());
-        const phase1Count = await getOne(
-          "SELECT COUNT(*) as cnt FROM registrations WHERE club_id = ? AND phase = 1 AND status != 'forfeited'",
-          [req.user.clubId]
-        );
         const guaranteedQuota = parseInt(settings.guaranteed_quota || '10');
-        if (current >= quota || phase1Count.cnt >= guaranteedQuota) {
-          newStatus = 'standby';
-        } else {
-          newStatus = 'registered';
-        }
+        insertSql = `
+          INSERT INTO registrations (club_id, position, name, id_card, birthday, phone, meal_type, phase, status)
+          SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, 1,
+            CASE WHEN (SELECT COUNT(*) FROM registrations WHERE status IN ('registered','paid')) >= ?8
+                  OR (SELECT COUNT(*) FROM registrations WHERE club_id = ?9 AND phase = 1 AND status != 'forfeited') >= ?10
+                 THEN 'standby' ELSE 'registered' END`;
+        insertArgs = [req.user.clubId, position || '', name, id_card || '', birthday || '', phone || '', meal_type || '', quota, req.user.clubId, guaranteedQuota];
       } else if (state === 'phase1_closed') {
         return res.status(400).json({ error: '第一階段報名已截止' });
       } else if (state === 'phase2') {
-        regPhase = 2;
-        const current = await occupancy(getDb());
-        newStatus = current < quota ? 'registered' : 'standby';
+        insertSql = `
+          INSERT INTO registrations (club_id, position, name, id_card, birthday, phone, meal_type, phase, status)
+          SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, 2,
+            CASE WHEN (SELECT COUNT(*) FROM registrations WHERE status IN ('registered','paid')) < ?8
+                 THEN 'registered' ELSE 'standby' END`;
+        insertArgs = [req.user.clubId, position || '', name, id_card || '', birthday || '', phone || '', meal_type || '', quota];
       } else {
         return res.status(400).json({ error: '報名已截止' });
       }
 
-      const id = await insert(
-        "INSERT INTO registrations (club_id, position, name, id_card, birthday, phone, meal_type, phase, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        [req.user.clubId, position || '', name, id_card || '', birthday || '', phone || '', meal_type || '', regPhase, newStatus]
-      );
+      const id = await insert(insertSql, insertArgs);
+
+      let newStatus;
+      const inserted = await getOne("SELECT status FROM registrations WHERE id = ?", [id]);
+      newStatus = inserted ? inserted.status : 'registered';
 
       res.json({ id, message: newStatus === 'standby' ? '報名成功（候補）' : '報名成功' });
     } catch (err) {
