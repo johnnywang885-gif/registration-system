@@ -46,8 +46,8 @@
   .slide {
     position: absolute; inset: 0;
     display: flex; flex-direction: column;
-    align-items: center; justify-content: center;
-    padding: 44px 20px calc(92px + env(safe-area-inset-bottom, 0px));
+    align-items: center; justify-content: safe center;
+    padding: 44px 20px calc(110px + env(safe-area-inset-bottom, 0px));
     opacity: 0; pointer-events: none;
     transform: scale(.93) rotate(.6deg);
     transition: opacity .5s ease, transform .5s cubic-bezier(.2,1.5,.4,1);
@@ -168,8 +168,9 @@
   }
   .section-sub { display: inline-block; margin-top: 12px; font-size: 16px; font-weight: 700; color: var(--ink); background: var(--white); border: 3px solid var(--ink); border-radius: 999px; padding: 6px 16px; box-shadow: 3px 3px 0 var(--ink); }
   .lead { font-size: 18px; line-height: 1.8; font-weight: 700; }
+  .url-wrap { position: relative; display: inline-block; margin-top: 18px; }
   .url-chip {
-    display: inline-block; margin-top: 18px; padding: 10px 20px;
+    display: inline-block; padding: 10px 20px;
     background: var(--white); border: 3px dashed var(--blue); border-radius: 999px;
     font-size: 15px; color: var(--blue); font-weight: 900; font-family: Consolas, monospace;
     box-shadow: 4px 4px 0 var(--blue); word-break: break-all;
@@ -313,7 +314,16 @@
   .step h4 { font-size: 17px; font-weight: 900; margin-bottom: 6px; }
   .step p { font-size: 13px; font-weight: 700; color: #555; line-height: 1.6; }
   .steps .arrow { position: absolute; right: -21px; top: 50%; transform: translateY(-50%); color: var(--red); font-size: 22px; font-weight: 900; z-index: 2; text-shadow: 2px 2px 0 #fff; }
-  @media (max-width: 640px) { .steps { grid-template-columns: 1fr; gap: 12px; } .steps .arrow { display: none; } }
+  @media (max-width: 640px) {
+    .steps { grid-template-columns: 1fr; gap: 8px; margin-top: 18px; }
+    .steps .arrow { display: none; }
+    .step { padding: 12px 10px; box-shadow: 4px 4px 0 var(--ink); }
+    .step-n { width: 30px; height: 30px; margin-bottom: 6px; }
+    .step h4 { font-size: 15px; margin-bottom: 4px; }
+    .step p { font-size: 12px; }
+    .thanks { margin-top: 18px; }
+    .contact { margin-top: 8px; }
+  }
 
   .thanks {
     display: inline-block; font-size: clamp(22px, 3.6vw, 30px); font-weight: 900; margin-top: 26px;
@@ -341,51 +351,55 @@
     50%     { transform: rotate(2deg) scale(1.05); }
   }
 
-  /* ===== 控制列 ===== */
+  /* ===== 控制列（底部僅保留圓點／自動播放／計數，不擋畫面）===== */
   .controls {
     position: fixed; left: 0; right: 0; bottom: 0; z-index: 50;
-    display: flex; align-items: center; justify-content: center; gap: 16px;
-    padding: 16px calc(16px + env(safe-area-inset-right, 0px)) calc(16px + env(safe-area-inset-bottom, 0px)) calc(16px + env(safe-area-inset-left, 0px));
-    background: linear-gradient(transparent, rgba(27,27,27,.12) 30%);
+    display: flex; align-items: center; justify-content: center; gap: 12px;
+    padding: 8px calc(10px + env(safe-area-inset-right, 0px)) calc(10px + env(safe-area-inset-bottom, 0px)) calc(10px + env(safe-area-inset-left, 0px));
     pointer-events: none;
   }
-  .controls .ctrl-btn, .controls .dot, .controls .auto-toggle { pointer-events: auto; }
-  .ctrl-btn {
-    width: 50px; height: 50px; border-radius: 50%; border: 4px solid var(--ink);
-    background: var(--yellow); color: var(--ink); font-size: 20px; font-weight: 900; cursor: pointer;
-    box-shadow: 4px 4px 0 var(--ink); transition: transform .12s;
+  .controls .dot, .controls .auto-toggle { pointer-events: auto; }
+  .ctrl-btn.side-nav {
+    position: fixed; top: 50%; transform: translateY(-50%);
+    width: 46px; height: 46px; border-radius: 50%; border: 3px solid var(--ink);
+    background: rgba(255,255,255,.5); color: var(--ink); font-size: 22px; font-weight: 900; cursor: pointer;
+    box-shadow: 3px 3px 0 rgba(0,0,0,.25); z-index: 55; opacity: .8;
+    transition: transform .15s, opacity .2s, box-shadow .15s;
   }
-  .ctrl-btn:hover { transform: scale(1.12) rotate(-6deg); }
-  .ctrl-btn:active { transform: translate(3px, 3px); box-shadow: 1px 1px 0 var(--ink); }
-  .ctrl-btn:disabled { opacity: .35; cursor: default; }
-  .dots { display: flex; gap: 9px; }
-  .dot { width: 14px; height: 14px; border-radius: 50%; background: var(--white); border: 3px solid var(--ink); cursor: pointer; transition: all .2s; }
+  .ctrl-btn.side-nav:hover { opacity: 1; transform: translateY(-50%) scale(1.1); }
+  .ctrl-btn.side-nav:active { transform: translateY(-50%) translate(2px, 2px) scale(.95); box-shadow: 1px 1px 0 rgba(0,0,0,.25); }
+  .ctrl-btn.side-nav:disabled { opacity: .25; cursor: default; transform: translateY(-50%); }
+  #prevBtn { left: 8px; }
+  #nextBtn { right: 8px; }
+  .dots { display: flex; gap: 7px; }
+  .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--white); border: 3px solid var(--ink); cursor: pointer; transition: all .2s; }
   .dot.active { background: var(--red); transform: scale(1.2) rotate(45deg); border-radius: 4px; }
   .auto-toggle {
     font-size: 13px; font-weight: 900; color: var(--ink); border: 3px solid var(--ink); border-radius: 999px;
-    background: var(--white); padding: 7px 16px; cursor: pointer; box-shadow: 3px 3px 0 var(--ink);
+    background: var(--white); padding: 6px 14px; cursor: pointer; box-shadow: 3px 3px 0 var(--ink);
+    white-space: nowrap; flex-shrink: 0;
   }
   .auto-toggle.on { background: var(--teal); }
-  .counter { font-size: 13px; font-weight: 900; color: var(--ink); background: var(--white); border: 3px solid var(--ink); border-radius: 999px; padding: 6px 12px; box-shadow: 2px 2px 0 var(--ink); font-variant-numeric: tabular-nums; }
+  .counter { font-size: 13px; font-weight: 900; color: var(--ink); background: var(--white); border: 3px solid var(--ink); border-radius: 999px; padding: 5px 11px; box-shadow: 2px 2px 0 var(--ink); font-variant-numeric: tabular-nums; white-space: nowrap; flex-shrink: 0; }
 
   .type-caret::after { content: "▌"; color: var(--red); animation: blink 1s steps(1) infinite; }
   @keyframes blink { 50% { opacity: 0; } }
 
-  .progress { position: fixed; top: 0; left: 0; height: 10px; background: var(--red); z-index: 60; width: 0; transition: width .5s ease; border-bottom: 3px solid var(--ink); }
+  .progress { position: fixed; top: 0; left: 0; height: 10px; background: var(--blue); z-index: 60; width: 0; transition: width .5s ease; border-bottom: 3px solid var(--ink); }
 
   .auto-hint {
-    position: fixed; left: 50%; bottom: 108px; transform: translateX(-50%);
-    background: var(--ink); color: #fff; padding: 9px 20px; border-radius: 999px;
+    position: absolute; left: 50%; bottom: calc(100% + 10px); transform: translateX(-50%);
+    background: var(--ink); color: #fff; padding: 8px 16px; border-radius: 999px;
     font-size: 13px; font-weight: 800; letter-spacing: 1px;
     box-shadow: 3px 3px 0 rgba(0,0,0,.35); z-index: 70;
     opacity: 0; pointer-events: none; transition: opacity .5s ease; white-space: nowrap;
   }
+  .auto-hint::after { content: "▼"; display: block; margin-top: 2px; font-size: 11px; line-height: 1; }
   .auto-hint.show { opacity: 1; }
 </style>
 </head>
 <body>
 <div class="progress" id="progress"></div>
-<div class="auto-hint" id="autoHint">自動播放中，點一下畫面可跳下一頁</div>
 <div class="stage" id="stage">
 
   <!-- 1 封面 -->
@@ -401,7 +415,10 @@
       <div class="bubble b-wham anim wiggle" style="--d:.85s; display:inline-block; margin-top:16px">
         線上報名・繳費證明・自動遞補・統計匯出！
       </div>
-      <div class="url-chip anim" style="--d:1.15s" id="chip">registration-system-production-4e05.up.railway.app</div>
+      <div class="url-wrap anim" style="--d:1.15s">
+        <div class="auto-hint" id="autoHint">自動播放中，點一下畫面可跳下一頁</div>
+        <div class="url-chip" id="chip">registration-system-production-4e05.up.railway.app</div>
+      </div>
     </div>
   </section>
 
@@ -602,10 +619,10 @@
 
 </div>
 
+<button class="ctrl-btn side-nav" id="prevBtn" aria-label="上一頁">‹</button>
+<button class="ctrl-btn side-nav" id="nextBtn" aria-label="下一頁">›</button>
 <div class="controls">
-  <button class="ctrl-btn" id="prevBtn" aria-label="上一頁">‹</button>
   <div class="dots" id="dots"></div>
-  <button class="ctrl-btn" id="nextBtn" aria-label="下一頁">›</button>
   <button class="auto-toggle on" id="autoBtn">自動播放</button>
   <span class="counter" id="counter">1 / 10</span>
 </div>
