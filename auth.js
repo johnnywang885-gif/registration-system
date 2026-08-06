@@ -2,21 +2,23 @@ const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const { getOne } = require('./database');
 
-const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
+function getSecret() {
+  return process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
+}
 if (!process.env.JWT_SECRET) {
-  console.warn('警告: JWT_SECRET 未設定，使用隨機密鑰。伺服器重啟後所有登入將失效。建議在 Railway 設定 JWT_SECRET。');
+  console.log('JWT_SECRET 未設定，啟動時將自動生成並持久化到資料庫。');
 }
 
 function generateToken(club) {
   return jwt.sign(
     { clubId: club.club_id, clubName: club.club_name, isAdmin: club.is_admin },
-    JWT_SECRET,
+    getSecret(),
     { expiresIn: '24h' }
   );
 }
 
 function verifyToken(token) {
-  return jwt.verify(token, JWT_SECRET);
+  return jwt.verify(token, getSecret());
 }
 
 function authMiddleware(req, res, next) {

@@ -4,6 +4,7 @@ const multer = require('multer');
 const rateLimit = require('express-rate-limit');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const XLSX = require('xlsx');
 const { initDatabase, getAll, getOne, runQuery, insert, importClubs, saveDatabase, getDb } = require('./database');
@@ -53,6 +54,20 @@ const upload = multer({
 function startServer() {
   const uploadsDir = path.join(__dirname, 'uploads', 'payments');
   if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+
+  async function ensureJwtSecret() {
+    if (process.env.JWT_SECRET) return;
+    const row = await getOne("SELECT value FROM settings WHERE key = 'jwt_secret'");
+    if (row && row.value) {
+      process.env.JWT_SECRET = row.value;
+      console.log('JWT_SECRET 已從資料庫載入');
+      return;
+    }
+    const secret = crypto.randomBytes(32).toString('hex');
+    await runQuery("INSERT OR REPLACE INTO settings (key, value) VALUES ('jwt_secret', ?)", [secret]);
+    process.env.JWT_SECRET = secret;
+    console.log('JWT_SECRET 已生成並存入資料庫');
+  }
 
   // ===== Health Check =====
   app.get('/health', (req, res) => {
@@ -371,6 +386,28 @@ function startServer() {
       res.json({ message: '已重設狀態' });
     } catch (err) {
       console.error('Reset status error:', err.message);
+      res.status(500).json({ error: '資料庫尚未就緒，請稍後再試' });
+    }
+  });
+
+  app.put('/api/admin/change-password', authMiddleware, adminMiddleware, async (req, res) => {
+    try {
+      const { currentPassword, newPassword } = req.body;
+      if (!currentPassword || !newPassword) return res.status(400).json({ error: '請輸入目前密碼與新密碼' });
+      if (String(newPassword).length < 8) return res.status(400).json({ error: '新密碼至少 8 碼' });
+
+      const admin = await getOne("SELECT * FROM clubs WHERE club_id = ?", [req.user.clubId]);
+      if (!admin || admin.is_admin !== 1) return res.status(403).json({ error: '無管理者權限' });
+
+      if (!bcrypt.compareSync(String(currentPassword), admin.password)) {
+        return res.status(400).json({ error: '目前密碼錯誤' });
+      }
+
+      const hash = bcrypt.hashSync(String(newPassword), 10);
+      await runQuery("UPDATE clubs SET password = ? WHERE club_id = ?", [hash, admin.club_id]);
+      res.json({ message: '密碼已更新，下次登入請使用新密碼' });
+    } catch (err) {
+      console.error('Change password error:', err.message);
       res.status(500).json({ error: '資料庫尚未就緒，請稍後再試' });
     }
   });
@@ -769,6 +806,7 @@ function startServer() {
     .then(async () => {
       console.log('Database ready');
       try {
+        await ensureJwtSecret();
         await runEnforcement();
         console.log('Startup enforcement done');
       } catch (err) {

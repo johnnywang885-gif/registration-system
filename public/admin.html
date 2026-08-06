@@ -139,6 +139,26 @@
           <button class="btn btn-danger" onclick="clearData()">清空報名資料</button>
         </div>
         <div id="restoreMsg" class="hidden mt-10"></div>
+
+        <hr style="margin: 30px 0; border: 1px solid #e0e0e0;">
+
+        <h3 style="margin-bottom: 16px;">修改管理員密碼</h3>
+        <form id="changePasswordForm">
+          <div class="form-row">
+            <div class="form-group">
+              <label>目前密碼</label>
+              <input type="password" id="cpCurrent" autocomplete="current-password">
+            </div>
+            <div class="form-group">
+              <label>新密碼（至少 8 碼）</label>
+              <input type="password" id="cpNew" autocomplete="new-password">
+            </div>
+          </div>
+          <div class="btn-group">
+            <button type="submit" class="btn btn-primary">更新密碼</button>
+            <span id="cpMsg" style="margin-left:12px; font-size:13px; color:#4a3728;"></span>
+          </div>
+        </form>
       </div>
 
       <!-- 遞補順序 -->
@@ -650,6 +670,29 @@
         body: JSON.stringify(settings)
       });
       alert('設定已儲存');
+    });
+
+    document.getElementById('changePasswordForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const current = document.getElementById('cpCurrent').value;
+      const next = document.getElementById('cpNew').value;
+      const msg = document.getElementById('cpMsg');
+      msg.textContent = '';
+      if (!current || !next) { msg.textContent = '請填寫完整'; return; }
+      if (next.length < 8) { msg.textContent = '新密碼至少 8 碼'; return; }
+      const res = await fetch('/api/admin/change-password', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ currentPassword: current, newPassword: next })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        msg.textContent = '✓ 密碼已更新';
+        document.getElementById('cpCurrent').value = '';
+        document.getElementById('cpNew').value = '';
+      } else {
+        msg.textContent = data.error || '更新失敗';
+      }
     });
 
     // === Promotion ===
