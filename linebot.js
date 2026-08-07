@@ -101,8 +101,11 @@ async function saveFeedback(clubId, displayName, category, message) {
 }
 
 async function handleLineEvent(event) {
-  if (event.type === 'join' && event.source && event.source.groupId) {
+  if (event.source && event.source.groupId) {
     await runQuery("INSERT OR REPLACE INTO settings (key, value) VALUES ('line_group_id', ?)", [event.source.groupId]);
+  }
+
+  if (event.type === 'join' && event.source && event.source.groupId) {
     console.log('LINE bot joined group:', event.source.groupId);
     await replyMessage(event.replyToken, '您好，我是區會報名系統的 AI 助理。操作問題可以直接問我；輸入「意見 內容」可回報問題或建議，我會記錄並轉交開發團隊。');
     return;
