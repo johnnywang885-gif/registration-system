@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>報名系統 - 意見回饋</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>區會報名系統</h1>
+      <p id="clubInfo">載入中...</p>
+    </div>
+
+    <div class="nav">
+      <a href="/" id="navLogout" onclick="localStorage.clear()">登出</a>
+      <a href="/register">報名</a>
+      <a href="/payment">繳費證明</a>
+      <a href="/summary">目前報名統計</a>
+      <a href="/feedback" class="active">意見回饋</a>
+      <a href="/intro.html">報名系統簡介</a>
+    </div>
+
+    <div class="card" style="max-width: 640px; margin: 0 auto;">
+      <h2 class="mb-20" style="font-size:18px; color:#4a3728;">意見回饋</h2>
+      <p style="font-size: 13px; color: #888; margin-bottom: 16px;">操作遇到問題、發現錯誤，或有任何建議，都可以在這裡告訴我們。送出後開發團隊會儘快處理。</p>
+      <form id="feedbackForm">
+        <div class="form-group">
+          <label>分類</label>
+          <select id="category">
+            <option value="操作問題">操作問題</option>
+            <option value="錯誤回報">錯誤回報</option>
+            <option value="功能建議">功能建議</option>
+            <option value="其他">其他</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>內容 *</label>
+          <textarea id="message" rows="6" maxlength="2000" placeholder="請描述您的問題或建議（最多 2000 字）" required></textarea>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary" id="submitBtn">送出意見</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script src="/js/toast.js"></script>
+  <script>
+    const token = localStorage.getItem('token');
+    if (!token) window.location.href = '/';
+
+    document.getElementById('clubInfo').textContent = localStorage.getItem('clubName') || '意見回饋';
+
+    document.getElementById('feedbackForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const message = document.getElementById('message').value.trim();
+      if (!message) return;
+      const category = document.getElementById('category').value;
+      const btn = document.getElementById('submitBtn');
+      btn.disabled = true;
+      btn.textContent = '送出中...';
+      try {
+        const res = await fetch('/api/feedback', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify({ category, message })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          toast(data.error || '送出失敗', 'error');
+          return;
+        }
+        document.getElementById('message').value = '';
+        toast('意見已送出（編號 #' + data.id + '），感謝您的回饋');
+      } catch (err) {
+        toast('送出失敗: ' + err.message, 'error');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '送出意見';
+      }
+    });
+  </script>
+</body>
+</html>

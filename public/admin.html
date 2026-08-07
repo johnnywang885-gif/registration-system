@@ -16,6 +16,7 @@
     <div class="nav">
       <a href="/" id="navLogout" onclick="localStorage.clear()">登出</a>
       <a href="/summary">目前報名統計</a>
+      <a href="/feedback">意見回饋</a>
       <a href="/intro.html">報名系統簡介</a>
       <a href="/admin" class="active admin-link">管理後台</a>
     </div>
@@ -27,6 +28,7 @@
         <div class="tab" data-tab="clubs">社團管理</div>
         <div class="tab" data-tab="settings">系統設定</div>
         <div class="tab" data-tab="standby">遞補順序</div>
+        <div class="tab" data-tab="feedback">意見回饋</div>
       </div>
 
       <!-- 報名管理 -->
@@ -143,6 +145,19 @@
 
         <hr style="margin: 30px 0; border: 1px solid #e0e0e0;">
 
+        <h3 style="margin-bottom: 16px;">LINE 群組公告推播</h3>
+        <p style="font-size: 13px; color: #666; margin-bottom: 16px;">將訊息推播到已加入的 LINE 群組（需 bot 已加入群組並設定 LINE 環境變數）。</p>
+        <div class="form-group" style="max-width: 520px;">
+          <label>公告內容</label>
+          <textarea id="announceText" rows="3" placeholder="例如：✅ 系統已更新，請大家再測試看看！https://..."></textarea>
+        </div>
+        <div class="btn-group">
+          <button class="btn btn-primary" onclick="sendAnnounce()">推播公告</button>
+          <span id="announceMsg" style="margin-left:12px; font-size:13px; color:#4a3728;"></span>
+        </div>
+
+        <hr style="margin: 30px 0; border: 1px solid #e0e0e0;">
+
         <h3 style="margin-bottom: 16px;">修改管理員密碼</h3>
         <form id="changePasswordForm">
           <div class="form-row">
@@ -180,6 +195,15 @@
         </div>
         <div id="standbyTable"></div>
       </div>
+
+      <!-- 意見回饋 -->
+      <div class="tab-content" id="tab-feedback">
+        <h3 style="font-size:15px; color:#4a3728; margin-bottom:12px;">社團與 LINE 群組回報的意見（未處理優先顯示）</h3>
+        <div class="loading hidden" id="loadingFeedback">
+          <div class="spinner"></div>
+        </div>
+        <div id="feedbackTable"></div>
+      </div>
     </div>
   </div>
 
@@ -212,6 +236,9 @@
         document.getElementById(`tab-${tab.dataset.tab}`).classList.add('active');
         if (tab.dataset.tab === 'standby') {
           loadStandbyList();
+        }
+        if (tab.dataset.tab === 'feedback') {
+          loadFeedback();
         }
       });
     });
@@ -802,6 +829,97 @@
         loadStandbyList();
       } catch (err) {
         toast('操作失敗', 'error');
+      }
+    }
+
+    // === Feedback ===
+    async function loadFeedback() {
+      document.getElementById('loadingFeedback').classList.remove('hidden');
+      try {
+        const res = await fetch('/api/admin/feedback', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (res.status === 401) { localStorage.clear(); window.location.href = '/'; return; }
+        const list = await res.json();
+        const container = document.getElementById('feedbackTable');
+        if (list.length === 0) {
+          container.innerHTML = '<div style="text-align:center; padding:20px; color:#999;">目前沒有意見回饋</div>';
+        } else {
+          container.innerHTML = `
+            <table>
+              <thead>
+                <tr>
+                  <th>編號</th>
+                  <th>來源</th>
+                  <th>分類</th>
+                  <th>內容</th>
+                  <th>時間</th>
+                  <th>狀態</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${list.map(f => `
+                  <tr>
+                    <td>#${f.id}</td>
+                    <td>${esc(f.club_name || f.display_name || '-')}</td>
+                    <td>${esc(f.category || '其他')}</td>
+                    <td style="max-width: 320px; white-space: normal;">${esc(f.message)}</td>
+                    <td>${new Date(f.created_at + 'Z').toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })}</td>
+                    <td>${f.status === 'open' ? '<span class="badge badge-forfeited">未處理</span>' : '<span class="badge badge-paid">已處理</span>'}</td>
+                    <td>
+                      ${f.status === 'open' ? `<button class="btn btn-sm btn-secondary" onclick="markFeedback(${f.id}, 'done')">標記已處理</button>` : `<button class="btn btn-sm btn-primary" onclick="markFeedback(${f.id}, 'open')">重新開啟</button>`}
+                    </td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          `;
+        }
+      } catch (err) {
+        toast('載入失敗', 'error');
+      } finally {
+        document.getElementById('loadingFeedback').classList.add('hidden');
+      }
+    }
+
+    async function markFeedback(id, status) {
+      try {
+        const res = await fetch(`/api/admin/feedback/${id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify({ status })
+        });
+        if (!res.ok) { toast('操作失敗', 'error'); return; }
+        loadFeedback();
+      } catch (err) {
+        toast('操作失敗', 'error');
+      }
+    }
+
+    // === LINE Announce ===
+    async function sendAnnounce() {
+      const text = document.getElementById('announceText').value.trim();
+      const msg = document.getElementById('announceMsg');
+      if (!text) { msg.textContent = '請輸入公告內容'; return; }
+      msg.textContent = '推播中...';
+      try {
+        const res = await fetch('/api/admin/line-announce', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify({ message: text })
+        });
+        const data = await res.json();
+        msg.textContent = res.ok ? '' : (data.error || '推播失敗');
+        if (res.ok) {
+          toast('已推播到 LINE 群組');
+          document.getElementById('announceText').value = '';
+        } else {
+          toast(data.error || '推播失敗', 'error');
+        }
+      } catch (err) {
+        msg.textContent = '推播失敗';
+        toast('推播失敗: ' + err.message, 'error');
       }
     }
 

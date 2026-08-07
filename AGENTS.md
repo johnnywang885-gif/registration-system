@@ -63,7 +63,7 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 - All DB functions (`getAll`, `getOne`, `runQuery`, `insert`) check `if (!db)` and throw "Database not connected" if called before init completes
 - `db.batch()` for multi-statement operations (table creation, bulk inserts)
 - `saveDatabase()` is a no-op (kept for backward compat)
-- Tables: `clubs`, `registrations`, `payment_proofs`, `settings`
+- Tables: `clubs`, `registrations`, `payment_proofs`, `settings`, `feedback`
 
 ### Registration Status Flow
 - `registered` → default status when a club member registers (occupies a seat)
@@ -109,7 +109,8 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 - `register.html` — registration form + card-based list（生日欄位民國年格式）
 - `payment.html` — payment proof upload
 - `summary.html` — public stats（表格標題顯示各階段截止日）
-- `admin.html` — admin panel with tabs (registrations, payments, clubs, settings, standby queue)
+- `admin.html` — admin panel with tabs (registrations, payments, clubs, settings, standby queue, feedback, LINE announce)
+- `feedback.html` — 意見回饋表單（分類＋內容，auth 必要）
 - `css/style.css` — shared styles (warm earthy theme: `#f5f0eb` bg, `#c0714a` primary)
 - `css/guide.css` — guided tour overlay styles (spotlight, tooltip, pulse/bounce animations)
 - `js/guide.js` — guided tour engine (no dependencies, vanilla JS; first-visit auto-play + replay button)
@@ -123,6 +124,10 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 | `TURSO_DATABASE_URL` | Yes | `libsql://...` format |
 | `TURSO_AUTH_TOKEN` | Yes | JWT from `turso db tokens create` |
 | `JWT_SECRET` | No | 未設時啟動自動生成 64-hex 並存入 Turso `settings` 表（key `jwt_secret`），重啟後從 DB 載回，登入不失效；無需手動設定 |
+| `LINE_CHANNEL_SECRET` | No | LINE Messaging API channel secret（webhook 簽章驗證用） |
+| `LINE_CHANNEL_ACCESS_TOKEN` | No | LINE Messaging API access token（回覆/推播用） |
+| `GEMINI_API_KEY` | No | Gemini API key（bot AI 回覆用；未設時 bot 回覆「AI 助理尚未設定」） |
+| `SYSTEM_URL` | No | 對外網址（bot 知識庫與簡介連結用，預設為目前 production URL） |
 | `PORT` | No | Set automatically by Railway |
 
 **Railway API gotcha**: `variableUpsert` mutation MUST include `serviceId` param, otherwise the variable is set at project level but not exposed to the running service. Query `services` to get the service ID first.
@@ -164,6 +169,10 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 - `GET /api/admin/clubs` + `POST/PUT/DELETE /api/admin/clubs` / `PUT /api/admin/clubs/:id/reset-password` — club management CRUD (admin only)
 - `PUT /api/payment/review/:id` — approve/reject payment proof (admin only)
 - `PUT /api/payment/reset/:id` — reset payment proof to pending (admin only)
+- `POST /api/feedback` — submit feedback (auth required; categories 操作問題/錯誤回報/功能建議/其他, max 2000 chars)
+- `GET /api/admin/feedback` / `PUT /api/admin/feedback/:id` — list (open first, newest first) / toggle open↔done (admin only)
+- `POST /api/admin/line-announce` — push a message to the LINE group the bot joined (admin only; 501 if LINE not configured)
+- `POST /line/webhook` — LINE Messaging API webhook (no auth; validates `X-Line-Signature` HMAC-SHA256 with `LINE_CHANNEL_SECRET`; acks 200 then processes events async)
 - `GET /api/payment/file/:id` — view payment proof file (auth required: admin or owning club)
 - `GET /api/payment/my-uploads` (club) / `GET /api/payment/all` (admin) — list payment proofs
 - `POST /api/admin/import-clubs` — bulk import clubs (admin only)
@@ -229,11 +238,17 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 - `js/toast.js` exposes `window.toast(msg, 'success' | 'error')` — used by `admin.html` (replaces native `alert()`; `confirm()` for destructive ops stays native). Styled via `.toast-container` / `.toast-*` in `style.css`.
 - `.password-wrap` + `.password-toggle` (eye SVG) toggles password visibility on the login page (`index.html`) and admin change-password fields (`cpCurrent`/`cpNew`); each page defines its own `togglePassword(inputId, btn)`.
 
+### Feedback & LINE Bot
+- `public/feedback.html` (auth required) submits to `feedback` table via `POST /api/feedback`; admin views/marks via 意見回饋 tab (`/api/admin/feedback`).
+- `linebot.js` — LINE Messaging API integration: `verifySignature()` (HMAC-SHA256, needs rawBody captured via `express.json({ verify })`), `handleLineEvent()` (join → records `line_group_id` into settings; text messages containing 意見/建議/回報/改進/壞掉/希望/bug → saved to `feedback` with a guessed category, else Gemini `gemini-2.0-flash` Q&A grounded in AGENTS rules + live deadline settings), `pushToGroup()` (announcements via 系統設定 tab button → `POST /api/admin/line-announce`; 501 when unconfigured).
+- LINE 群組限制：bot 只在被 @提及 時收到群組訊息；webhook 先 ack 200 再異步處理事件。`feedback` 表含在 backup/restore 中。
+
 ## File Structure
 ```
 server.js        — Express app + all routes (startServer is sync, not async)
 database.js      — Turso cloud operations (@libsql/client), db starts as null
 deadlines.js     — date-driven phase state machine + auto promote/forfeit (enforceDeadlines middleware, non-blocking with debounce)
+linebot.js       — LINE Messaging API integration (signature verify, AI reply, feedback logging, group push)
 auth.js          — JWT auth middleware
 public/          — Frontend HTML files
 public/css/      — Shared styles (style.css + guide.css)

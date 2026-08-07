@@ -52,6 +52,15 @@ async function initDatabase() {
     `CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
       value TEXT
+    )`,
+    `CREATE TABLE IF NOT EXISTS feedback (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      club_id INTEGER,
+      display_name TEXT,
+      category TEXT DEFAULT '其他',
+      message TEXT NOT NULL,
+      status TEXT DEFAULT 'open',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`
   ], 'write');
 

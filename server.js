@@ -10,12 +10,13 @@ const XLSX = require('xlsx');
 const { initDatabase, getAll, getOne, runQuery, insert, importClubs, saveDatabase, getDb } = require('./database');
 const { generateToken, authMiddleware, adminMiddleware } = require('./auth');
 const { taipeiToday, phaseState, getSettings, occupancy, promoteStandby, forfeitUnpaidByPhase, runEnforcement, enforceDeadlines } = require('./deadlines');
+const { verifySignature, handleLineEvent, pushToGroup } = require('./linebot');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.set('trust proxy', 1);
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '10mb', verify: (req, res, buf) => { req.rawBody = buf; } }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 const loginLimiter = rateLimit({
@@ -95,6 +96,10 @@ function startServer() {
     res.sendFile(path.join(__dirname, 'public', 'admin.html'));
   });
 
+  app.get('/feedback', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'feedback.html'));
+  });
+
   // ===== Deadline Enforcement (date-driven phase transitions, runs on every API request) =====
   app.use('/api', enforceDeadlines);
 
@@ -147,6 +152,50 @@ function startServer() {
     } catch (err) {
       console.error('Me error:', err.message);
       res.status(500).json({ error: '資料庫尚未就緒，請稍後再試' });
+    }
+  });
+
+  // ===== Feedback API =====
+  app.post('/api/feedback', authMiddleware, async (req, res) => {
+    try {
+      const { category, message } = req.body || {};
+      const text = message ? String(message).trim() : '';
+      if (!text) return res.status(400).json({ error: '請輸入意見內容' });
+      if (text.length > 2000) return res.status(400).json({ error: '意見內容過長（最多 2000 字）' });
+      const allowed = ['操作問題', '錯誤回報', '功能建議', '其他'];
+      const cat = allowed.includes(category) ? category : '其他';
+      const club = await getOne("SELECT club_name FROM clubs WHERE club_id = ?", [req.user.clubId]);
+      const id = await insert("INSERT INTO feedback (club_id, display_name, category, message, status) VALUES (?, ?, ?, ?, 'open')",
+        [req.user.clubId, club ? club.club_name : String(req.user.clubId), cat, text]);
+      res.json({ message: '意見已送出，感謝您的回饋', id });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/api/admin/feedback', authMiddleware, adminMiddleware, async (req, res) => {
+    try {
+      const rows = await getAll(`
+        SELECT f.id, f.club_id, f.display_name, f.category, f.message, f.status, f.created_at, c.club_name
+        FROM feedback f
+        LEFT JOIN clubs c ON c.club_id = f.club_id
+        ORDER BY CASE WHEN f.status = 'open' THEN 0 ELSE 1 END, f.created_at DESC
+      `);
+      res.json(rows);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.put('/api/admin/feedback/:id', authMiddleware, adminMiddleware, async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      if (isNaN(id)) return res.status(400).json({ error: '無效的編號' });
+      const status = (req.body && req.body.status) === 'open' ? 'open' : 'done';
+      await runQuery("UPDATE feedback SET status = ? WHERE id = ?", [status, id]);
+      res.json({ message: '已更新' });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
     }
   });
 
@@ -633,6 +682,7 @@ function startServer() {
     const registrations = await getAll("SELECT * FROM registrations");
     const paymentProofs = await getAll("SELECT * FROM payment_proofs");
     const settings = await getAll("SELECT * FROM settings");
+    const feedback = await getAll("SELECT * FROM feedback");
 
     const backup = {
       version: 1,
@@ -640,7 +690,8 @@ function startServer() {
       clubs,
       registrations,
       payment_proofs: paymentProofs,
-      settings
+      settings,
+      feedback
     };
 
     const json = JSON.stringify(backup, null, 2);
@@ -663,6 +714,7 @@ function startServer() {
       await dbConn.batch([
         "DELETE FROM payment_proofs",
         "DELETE FROM registrations",
+        "DELETE FROM feedback",
         "DELETE FROM settings",
         "DELETE FROM clubs WHERE is_admin = 0"
       ], 'write');
@@ -697,6 +749,15 @@ function startServer() {
           args: [s.key, s.value]
         }));
         await dbConn.batch(settStmts, 'write');
+      }
+
+      // Restore feedback
+      if (backup.feedback && backup.feedback.length > 0) {
+        const fbStmts = backup.feedback.map(f => ({
+          sql: "INSERT OR REPLACE INTO feedback (id, club_id, display_name, category, message, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+          args: [f.id, f.club_id || null, f.display_name || '', f.category || '其他', f.message, f.status || 'open', f.created_at || null]
+        }));
+        await dbConn.batch(fbStmts, 'write');
       }
 
       res.json({ message: `還原成功：${backup.clubs.length} 個社團、${backup.registrations.length} 筆報名` });
@@ -788,6 +849,31 @@ function startServer() {
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', 'attachment; filename=registration_report.xlsx');
     res.send(buffer);
+  });
+
+  // ===== LINE Bot Webhook =====
+  app.post('/line/webhook', async (req, res) => {
+    const signature = req.headers['x-line-signature'];
+    if (!verifySignature(req.rawBody, signature)) {
+      return res.status(401).json({ error: 'invalid signature' });
+    }
+    res.status(200).json({ status: 'ok' });
+    const events = (req.body && req.body.events) || [];
+    for (const event of events) {
+      handleLineEvent(event).catch(err => console.error('LINE event error:', err.message));
+    }
+  });
+
+  app.post('/api/admin/line-announce', authMiddleware, adminMiddleware, async (req, res) => {
+    try {
+      const message = req.body && req.body.message ? String(req.body.message).trim() : '';
+      if (!message) return res.status(400).json({ error: '請輸入公告內容' });
+      const ok = await pushToGroup(message);
+      if (!ok) return res.status(501).json({ error: 'LINE 尚未設定（缺少環境變數或 bot 尚未加入群組）' });
+      res.json({ message: '已推播到 LINE 群組' });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
   });
 
   // ===== Global Error Handler (catches async errors in route handlers) =====
