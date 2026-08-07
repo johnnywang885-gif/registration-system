@@ -240,8 +240,10 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 
 ### Feedback & LINE Bot
 - `public/feedback.html` (auth required) submits to `feedback` table via `POST /api/feedback`; admin views/marks via 意見回饋 tab (`/api/admin/feedback`).
-- `linebot.js` — LINE Messaging API integration: `verifySignature()` (HMAC-SHA256, needs rawBody captured via `express.json({ verify })`), `handleLineEvent()` (join → records `line_group_id` into settings; text messages containing 意見/建議/回報/改進/壞掉/希望/bug → saved to `feedback` with a guessed category, else Gemini `gemini-2.5-flash` Q&A grounded in AGENTS rules + live deadline settings), `pushToGroup()` (announcements via 系統設定 tab button → `POST /api/admin/line-announce`; 501 when unconfigured).
+- `linebot.js` — LINE Messaging API integration: `verifySignature()` (HMAC-SHA256, needs rawBody captured via `express.json({ verify })`), `handleLineEvent()` (ANY event with a `groupId` — join or group message — upserts `line_group_id` into settings; join also sends a welcome message; text messages containing 意見/建議/回報/改進/壞掉/希望/bug → saved to `feedback` with a guessed category, else Gemini `gemini-2.5-flash` Q&A grounded in AGENTS rules + live deadline settings), `pushToGroup()` (announcements via 系統設定 tab button → `POST /api/admin/line-announce`; 501 when unconfigured).
 - LINE 群組限制：bot 只在被 @提及 時收到群組訊息；webhook 先 ack 200 再異步處理事件。`feedback` 表含在 backup/restore 中。
+- LINE Developers 主控台（非程式碼）gotchas：① Channel → Messaging API 頁籤需將「使用 Webhook」設為 ON，Webhook URL 指向 `https://.../line/webhook`；② 官方帳號「自動回應訊息」若未停用，用戶會同時收到 LINE 預設回覆與 bot 回覆（設定位置：manager.line.biz → 設定 → 回應訊息）；③ 「自動退出群組」開關若開啟，bot 被邀請進群會立刻自動退出（曾踩坑：bot 反覆進群即退，直到主控台關閉該設定）。
+- Gemini 模型注意：曾因 API key 對 `gemini-2.0-flash` 免費額度為 0（429 limit:0）導致 bot 回退「AI 助理尚未設定」，改用 `gemini-2.5-flash` 後正常；若未來再遇 429，可先用 `generateContent` 實測各模型額度再改 `linebot.js` 的 `GEMINI_API`。
 
 ## File Structure
 ```
