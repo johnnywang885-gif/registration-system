@@ -240,7 +240,7 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 
 ### Feedback & LINE Bot
 - `public/feedback.html` (auth required) submits to `feedback` table via `POST /api/feedback`; admin views/marks via 意見回饋 tab (`/api/admin/feedback`).
-- `linebot.js` — LINE Messaging API integration: `verifySignature()` (HMAC-SHA256, needs rawBody captured via `express.json({ verify })`), `handleLineEvent()` (join → records `line_group_id` into settings; text messages containing 意見/建議/回報/改進/壞掉/希望/bug → saved to `feedback` with a guessed category, else Gemini `gemini-2.0-flash` Q&A grounded in AGENTS rules + live deadline settings), `pushToGroup()` (announcements via 系統設定 tab button → `POST /api/admin/line-announce`; 501 when unconfigured).
+- `linebot.js` — LINE Messaging API integration: `verifySignature()` (HMAC-SHA256, needs rawBody captured via `express.json({ verify })`), `handleLineEvent()` (join → records `line_group_id` into settings; text messages containing 意見/建議/回報/改進/壞掉/希望/bug → saved to `feedback` with a guessed category, else Gemini `gemini-2.5-flash` Q&A grounded in AGENTS rules + live deadline settings), `pushToGroup()` (announcements via 系統設定 tab button → `POST /api/admin/line-announce`; 501 when unconfigured).
 - LINE 群組限制：bot 只在被 @提及 時收到群組訊息；webhook 先 ack 200 再異步處理事件。`feedback` 表含在 backup/restore 中。
 
 ## File Structure
