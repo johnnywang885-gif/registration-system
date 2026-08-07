@@ -148,11 +148,21 @@
           <div class="form-row">
             <div class="form-group">
               <label>目前密碼</label>
-              <input type="password" id="cpCurrent" autocomplete="current-password">
+              <div class="password-wrap">
+                <input type="password" id="cpCurrent" autocomplete="current-password">
+                <button type="button" class="password-toggle" aria-label="顯示密碼" title="顯示密碼" onclick="togglePassword('cpCurrent', this)">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+                </button>
+              </div>
             </div>
             <div class="form-group">
               <label>新密碼（至少 8 碼）</label>
-              <input type="password" id="cpNew" autocomplete="new-password">
+              <div class="password-wrap">
+                <input type="password" id="cpNew" autocomplete="new-password">
+                <button type="button" class="password-toggle" aria-label="顯示密碼" title="顯示密碼" onclick="togglePassword('cpNew', this)">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+                </button>
+              </div>
             </div>
           </div>
           <div class="btn-group">
@@ -185,6 +195,7 @@
     </div>
   </div>
 
+  <script src="/js/toast.js"></script>
   <script>
     const token = localStorage.getItem('token');
     if (!token) window.location.href = '/';
@@ -215,6 +226,18 @@
       return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
         '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
       }[ch]));
+    }
+
+    const EYE_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>';
+    const EYE_OFF_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"></path><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"></path><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>';
+
+    function togglePassword(inputId, btn) {
+      const input = document.getElementById(inputId);
+      const show = input.type === 'password';
+      input.type = show ? 'text' : 'password';
+      btn.innerHTML = show ? EYE_OFF_SVG : EYE_SVG;
+      btn.setAttribute('aria-label', show ? '隱藏密碼' : '顯示密碼');
+      btn.title = show ? '隱藏密碼' : '顯示密碼';
     }
 
     function westernToROC(dateStr) {
@@ -291,7 +314,7 @@
           `;
         }
       } catch (err) {
-        alert('載入失敗: ' + err.message);
+        toast('載入失敗: ' + err.message, 'error');
       } finally {
         document.getElementById('loadingReg').classList.add('hidden');
       }
@@ -336,7 +359,7 @@
           headers: { 'Authorization': `Bearer ${token}` }
         });
         if (res.status === 401) { localStorage.clear(); window.location.href = '/'; return; }
-        if (!res.ok) { alert('匯出失敗'); return; }
+        if (!res.ok) { toast('匯出失敗', 'error'); return; }
         const blob = await res.blob();
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -347,7 +370,7 @@
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
       } catch (err) {
-        alert('匯出失敗: ' + err.message);
+        toast('匯出失敗: ' + err.message, 'error');
       }
     }
 
@@ -398,7 +421,7 @@
           `;
         }
       } catch (err) {
-        alert('載入失敗');
+        toast('載入失敗', 'error');
       } finally {
         document.getElementById('loadingPay').classList.add('hidden');
       }
@@ -422,11 +445,11 @@
         const res = await fetch(`/api/payment/file/${id}`, {
           headers: { 'Authorization': `Bearer ${token}` }
         });
-        if (!res.ok) { alert('無法載入檔案'); return; }
+        if (!res.ok) { toast('無法載入檔案', 'error'); return; }
         const blob = await res.blob();
         window.open(URL.createObjectURL(blob), '_blank');
       } catch (err) {
-        alert('載入檔案失敗');
+        toast('載入檔案失敗', 'error');
       }
     }
 
@@ -486,7 +509,7 @@
           </table>
         `;
       } catch (err) {
-        alert('載入失敗');
+        toast('載入失敗', 'error');
       } finally {
         document.getElementById('loadingClub').classList.add('hidden');
       }
@@ -560,7 +583,7 @@
         method: 'PUT',
         headers: { 'Authorization': `Bearer ${token}` }
       });
-      alert('密碼已重設為預設值');
+      toast('密碼已重設為預設值');
     }
 
     async function deleteClub(id) {
@@ -590,10 +613,10 @@
           body: formData
         });
         const data = await res.json();
-        alert(data.message || data.error);
+        toast(data.message || data.error || '匯入完成', res.ok ? 'success' : 'error');
         loadClubs();
       } catch (err) {
-        alert('匯入失敗');
+        toast('匯入失敗', 'error');
       }
       e.target.value = '';
     });
@@ -670,7 +693,7 @@
         },
         body: JSON.stringify(settings)
       });
-      alert('設定已儲存');
+      toast('設定已儲存');
     });
 
     document.getElementById('changePasswordForm').addEventListener('submit', async (e) => {
@@ -775,10 +798,10 @@
           headers: { 'Authorization': `Bearer ${token}` }
         });
         const data = await res.json();
-        alert(data.message || data.error);
+        toast(data.message || data.error || '操作完成', res.ok ? 'success' : 'error');
         loadStandbyList();
       } catch (err) {
-        alert('操作失敗');
+        toast('操作失敗', 'error');
       }
     }
 
@@ -789,7 +812,7 @@
           headers: { 'Authorization': `Bearer ${token}` }
         });
         if (res.status === 401) { localStorage.clear(); window.location.href = '/'; return; }
-        if (!res.ok) { alert('備份失敗'); return; }
+        if (!res.ok) { toast('備份失敗', 'error'); return; }
         const blob = await res.blob();
         const disposition = res.headers.get('Content-Disposition') || '';
         const match = disposition.match(/filename="?([^";]+)"?/);
@@ -803,7 +826,7 @@
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
       } catch (err) {
-        alert('備份失敗: ' + err.message);
+        toast('備份失敗: ' + err.message, 'error');
       }
     }
 

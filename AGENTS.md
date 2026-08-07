@@ -28,6 +28,7 @@ No lint, typecheck, or test scripts exist. This is a plain JS project with no bu
 - `review_d_rule_timeline.js` — boots real server on PORT 34892, drives a full 7-stage timeline over HTTP (phase-1 overflow → promote → pay → forfeit → phase-2 standby / manual promote).
 - `sim_phase2_144_30.js` — boots real server on PORT 34893; scenario simulation (Phase 1: 144 paid + paid-club standby; Phase 2: 30 incl. those standby) printing per-club tables. Reuse as a template for "what if" simulations.
 - `sim_185_30.js` — boots real server on PORT 34904; scenario simulation (185 Phase-1 registrations incl. 5 big clubs over the 10-seat guarantee → 50 unpaid forfeits → 30 Phase-2 registrations) and keeps the DB alive for browser verification. Reuse as template too.
+- `sim_frontend_boot.js` — boots real server on PORT 34900, seeds clubs 2401/2402, then stays alive (`setInterval`) for manual/browser frontend testing. **Use this instead of `npm start` when you need a running server for MCP browser work.**
 - Run **one at a time, sequentially** — each boots its own server on a distinct port against a throwaway `file:` DB in `test/*.db` (gitignored). Pass = output ends with `PASS` / `全部階段 PASS`.
 - `phase2_standby.js` / `simulate.js` are stale one-off scripts still driven by the ignored `current_phase` setting — ignore them.
 
@@ -146,10 +147,12 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 5. **Health works but API 404**: Wrong service URL — the production URL includes a service suffix
 
 ## API Routes
-- `POST /api/login` — returns JWT token
+- `POST /api/login` — returns JWT token (rate-limited: 10 attempts / 15 min)
+- `GET /api/me` — current club/admin info (auth required)
 - `GET /api/summary` — public stats (no auth): per-club `phase1_registered/standby/paid/phase1_total/phase2_count` + totals `phase1Total`, `phase1PaidTotal`, `phase2Total` + `settings` (deadlines, quotas)
 - `POST /api/registrations` — create registration (auth required; phase & status derived from dates, auto-standby logic)
 - `GET /api/my-registrations` — list club's registrations (auth required)
+- `PUT /api/registrations/:id` / `DELETE /api/registrations/:id` — club edits/deletes own registration; rejected when status is `paid`/`forfeited`
 - `GET /api/admin/all` — all registrations with filters: club_id, phase, status (admin only)
 - `PUT /api/admin/payment/:id` — mark registration as paid (admin only)
 - `PUT /api/admin/forfeit/:id` — mark registration as forfeited (admin only)
@@ -158,14 +161,17 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 - `POST /api/admin/promote` — auto-promote Phase 1 standby to fill quota (admin only)
 - `GET /api/admin/standby-list` — list standby from BOTH phases (admin only)
 - `POST /api/admin/promote/:id` — manual promote single standby, respects 160 cap (admin only)
+- `GET /api/admin/clubs` + `POST/PUT/DELETE /api/admin/clubs` / `PUT /api/admin/clubs/:id/reset-password` — club management CRUD (admin only)
 - `PUT /api/payment/review/:id` — approve/reject payment proof (admin only)
 - `PUT /api/payment/reset/:id` — reset payment proof to pending (admin only)
 - `GET /api/payment/file/:id` — view payment proof file (auth required: admin or owning club)
+- `GET /api/payment/my-uploads` (club) / `GET /api/payment/all` (admin) — list payment proofs
 - `POST /api/admin/import-clubs` — bulk import clubs (admin only)
 - `POST /api/admin/import-excel` — import from XLSX (admin only)
 - `GET /api/admin/backup` — full backup as JSON (admin only)
 - `POST /api/admin/restore` — restore from JSON (admin only)
 - `POST /api/admin/clear-data` — clear all registrations & payment proofs (keeps clubs & settings) (admin only)
+- `GET /api/admin/settings` / `PUT /api/admin/settings` — read (incl. `derived_phase`, `today`, `occupancy`, `remaining`) / update deadline+quota settings (admin only)
 - `GET /api/admin/export` — export as XLSX (admin only); accepts `club_id`/`phase`/`status` filters, applied to BOTH sheets (報名資料 + 彙整統計)
 - `GET /health` — health check (no auth)
 
@@ -216,8 +222,12 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 ### Guided Tour (操作導覽)
 - `js/guide.js` + `css/guide.js` provide a reusable guided tour engine
 - Steps defined per page via `window.GUIDE_STEPS` and `window.GUIDE_PAGE`
-- First-visit auto-play (localStorage `guideSeen_<page>`) + persistent replay button
+- First-visit auto-play (localStorage `guideSeen_<page>`) + persistent replay button; auto-play starts 1800ms after load (delayed so browser UI prompts like the password-save bubble don't overlap)
 - Uses `mix-blend-mode: darken` on spotlight for visual highlight; tooltip auto-flips to avoid covering targets
+
+### Toast & Password Toggle
+- `js/toast.js` exposes `window.toast(msg, 'success' | 'error')` — used by `admin.html` (replaces native `alert()`; `confirm()` for destructive ops stays native). Styled via `.toast-container` / `.toast-*` in `style.css`.
+- `.password-wrap` + `.password-toggle` (eye SVG) toggles password visibility on the login page (`index.html`) and admin change-password fields (`cpCurrent`/`cpNew`); each page defines its own `togglePassword(inputId, btn)`.
 
 ## File Structure
 ```
@@ -227,13 +237,14 @@ deadlines.js     — date-driven phase state machine + auto promote/forfeit (enf
 auth.js          — JWT auth middleware
 public/          — Frontend HTML files
 public/css/      — Shared styles (style.css + guide.css)
-public/js/       — Guide tour engine (guide.js)
+public/js/       — Guide tour engine (guide.js) + toast utility (toast.js)
 public/images/   — Logo assets (culroc-logo.jpg)
 uploads/         — Payment proof files (gitignored)
 test/            — regression + simulation scripts (see Verification; *.db gitignored)
 test/launch-chrome.ps1 — one-command Chrome + remote-debugging launcher for MCP browser testing
 docs/影片生成素材.md — Gemini Notebook 影片素材（分鏡＋字幕逐字稿＋準確資料附錄）
-docs/報名系統簡介.html — 漫畫風動畫簡報（原始檔）；**public/intro.html 是它的部署副本，改動後務必 `Copy-Item docs/報名系統簡介.html public/intro.html` 同步**，不然網站分享的是舊版
+docs/報名系統簡介.html — 漫畫風動畫簡報（原始檔，先於 public 版本存在）；**public/intro.html 是它的部署副本，兩個檔案必須保持一致**：改動任一檔後務必 `Copy-Item` 覆寫另一檔（比對 hash 確認），不然網站分享的是舊版
+RAILWAY_SWITCH_MEMO.md — Railway Trial→Free 方案切換備忘（2025/8 舊文件；其中 admin/admin123 已是舊密碼，勿對正式庫使用）
 railway.json     — Railway deploy config (Nixpacks builder)
 ```
 

@@ -216,7 +216,7 @@
     buildLauncher();
 
     if (!localStorage.getItem(SEEN_KEY)) {
-      setTimeout(start, 600);
+      setTimeout(start, 1800);
     }
 
     window.addEventListener('resize', onViewportChange, { passive: true });
