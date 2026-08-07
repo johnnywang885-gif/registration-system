@@ -132,13 +132,27 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 
 **Railway API gotcha**: `variableUpsert` mutation MUST include `serviceId` param, otherwise the variable is set at project level but not exposed to the running service. Query `services` to get the service ID first.
 
+**Current live state (2026-08)**: production has `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `LINE_CHANNEL_SECRET`, `LINE_CHANNEL_ACCESS_TOKEN`, `GEMINI_API_KEY` set at service level; `JWT_SECRET` is auto-generated into Turso settings. LINE bot (AI Q&A, feedback, group announce) is fully live and verified.
+
+### Railway GraphQL API (account token — works, `railway` CLI doesn't)
+- Endpoint: `https://backboard.railway.com/graphql/v2` (or `backboard.railway.app`), header `Authorization: Bearer <token>`, `Content-Type: application/json`, body `{"query":"..."}`.
+- Tokens are created at **https://railway.com/account/tokens** (account-level, UUID4 format). 
+- **Verification quirk**: `query { me { id } }` returns `Not Authorized` even with a valid token. Verify with `query { __typename }` (returns `{"data":{"__typename":"Query"}}`) or `query { projects { edges { node { id name } } } }`.
+- This project: `projects` → `e981451a-db5f-42db-9a62-23f5f1889922` (industrious-renewal); service `registration-system` → `1dbe8188-dd80-44be-8d02-537e7815f7e9`; environment `production` → `9b0983a9-b37c-4533-b606-c2865f1c17bf`. Discover via `project(id){ services { edges { node { id name } } } environments { edges { node { id name } } } }`.
+- `variableUpsert` input fields: **`name`** (the variable key — NOT `key`), `value`, `projectId`, `serviceId`, `environmentId`, `skipDeploys`. Returns `Boolean!` — **no selection** (adding `{ id }` → 400). Env changes auto-trigger a redeploy (unless `skipDeploys`); rapid upserts dedupe into one deploy, extras show `REMOVED`.
+- `variables` query: `variables(projectId, environmentId, serviceId)` returns a JSON map, **no selection**. **Must pass `serviceId`** or you only see project-level vars (the linebot/Gemini vars will appear missing).
+- `deployments`: `deployments(input: { projectId, serviceId, environmentId }, first: N) { edges { node { id status createdAt } } }`.
+- Redeploy latest commit: `serviceInstanceDeployV2(serviceId, environmentId)` — returns `String!` (deployment id, **no selection**). There is also `serviceInstanceDeploy(serviceId, environmentId, commitSha?, latestCommit?)`.
+- **Transient build failures happen**: a GitHub-triggered deploy once sat `BUILDING` ~10 min then `FAILED` with no retrievable logs (`buildLogs`/`deploymentLogs` often return empty) and meta showing `builder: RAILPACK`/null startCommand even though `railway.json` requests NIXPACKS. Retrying via `serviceInstanceDeployV2` succeeded immediately. Don't chase the failure — check `/health` after redeploy.
+- Real Turso creds are readable via the `variables` query — safe for **read-only SELECT** verification of production state (e.g., `settings.line_group_id`), never run enforcement/backup-restore against the live DB.
+
 ### Deploy Flow
 - Push to `master` → Railway auto-deploys via GitHub webhook
 - Healthcheck: `GET /health` must return 200 within 30s
 - Current production URL: `https://registration-system-production-4e05.up.railway.app` (`/health` and `/api/summary` are public for quick checks)
 - **uploads/ is NOT persistent on Railway**: every deploy/restart wipes uploaded payment-proof files (DB rows keep the `file_path`, but `GET /api/payment/file/:id` then 404s). Backup JSON does NOT include file contents. Accepted as-is — tell admins clubs can re-upload.
 - **Detect whether a deploy actually switched versions**: `POST /api/login` with a ~200KB body → new code (10mb `express.json`) returns 401, old code (100kb limit) returns 500. Useful because rolling deploys may never drop `/health`.
-- The `railway` CLI is installed but **not linked/logged in** in this environment (`railway whoami` / `railway variables` print nothing). Get real env vars/creds from the Railway dashboard — do not assume `railway` commands work.
+- The `railway` CLI is installed but **not linked/logged in** in this environment (`railway whoami` / `railway variables` print nothing). Use the GraphQL API with an account token instead (see below) — do not assume `railway` commands work.
 - If deploy fails with "Healthcheck failure" or "Application failed to respond":
   - Check that routes are registered before `initDatabase()`
   - Check that `initDatabase()` is non-blocking
@@ -244,6 +258,7 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 - LINE 群組限制：bot 只在被 @提及 時收到群組訊息；webhook 先 ack 200 再異步處理事件。`feedback` 表含在 backup/restore 中。
 - LINE Developers 主控台（非程式碼）gotchas：① Channel → Messaging API 頁籤需將「使用 Webhook」設為 ON，Webhook URL 指向 `https://.../line/webhook`；② 官方帳號「自動回應訊息」若未停用，用戶會同時收到 LINE 預設回覆與 bot 回覆（設定位置：manager.line.biz → 設定 → 回應訊息）；③ 「自動退出群組」開關若開啟，bot 被邀請進群會立刻自動退出（曾踩坑：bot 反覆進群即退，直到主控台關閉該設定）。
 - Gemini 模型注意：曾因 API key 對 `gemini-2.0-flash` 免費額度為 0（429 limit:0）導致 bot 回退「AI 助理尚未設定」，改用 `gemini-2.5-flash` 後正常；若未來再遇 429，可先用 `generateContent` 實測各模型額度再改 `linebot.js` 的 `GEMINI_API`。
+- E2E 驗證撇步（不需真實用戶）：用 `LINE_CHANNEL_SECRET` 對測試 body 算 HMAC-SHA256 簽章 POST 到 `/line/webhook`（PowerShell `HMACSHA256` + Base64）→ 200 代表部署實例的 secret 正確；帶 `source.groupId` 的訊息事件會寫入 `line_group_id`，可再用 Railway variables 拿到的 Turso creds 對正式庫 SELECT 確認。
 
 ## File Structure
 ```
