@@ -853,12 +853,12 @@ function startServer() {
 
   // ===== LINE Bot Webhook =====
   app.post('/line/webhook', async (req, res) => {
+    const events = (req.body && req.body.events) || [];
     const signature = req.headers['x-line-signature'];
-    if (!verifySignature(req.rawBody, signature)) {
+    if (events.length > 0 && !verifySignature(req.rawBody, signature)) {
       return res.status(401).json({ error: 'invalid signature' });
     }
     res.status(200).json({ status: 'ok' });
-    const events = (req.body && req.body.events) || [];
     for (const event of events) {
       handleLineEvent(event).catch(err => console.error('LINE event error:', err.message));
     }

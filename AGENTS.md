@@ -172,7 +172,7 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 - `POST /api/feedback` — submit feedback (auth required; categories 操作問題/錯誤回報/功能建議/其他, max 2000 chars)
 - `GET /api/admin/feedback` / `PUT /api/admin/feedback/:id` — list (open first, newest first) / toggle open↔done (admin only)
 - `POST /api/admin/line-announce` — push a message to the LINE group the bot joined (admin only; 501 if LINE not configured)
-- `POST /line/webhook` — LINE Messaging API webhook (no auth; validates `X-Line-Signature` HMAC-SHA256 with `LINE_CHANNEL_SECRET`; acks 200 then processes events async)
+- `POST /line/webhook` — LINE Messaging API webhook (no auth; validates `X-Line-Signature` HMAC-SHA256 with `LINE_CHANNEL_SECRET`; empty-event requests pass WITHOUT signature so LINE console URL verification works; acks 200 then processes events async)
 - `GET /api/payment/file/:id` — view payment proof file (auth required: admin or owning club)
 - `GET /api/payment/my-uploads` (club) / `GET /api/payment/all` (admin) — list payment proofs
 - `POST /api/admin/import-clubs` — bulk import clubs (admin only)
