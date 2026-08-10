@@ -10,7 +10,7 @@ const XLSX = require('xlsx');
 const { initDatabase, getAll, getOne, runQuery, insert, importClubs, saveDatabase, getDb } = require('./database');
 const { generateToken, authMiddleware, adminMiddleware } = require('./auth');
 const { taipeiToday, phaseState, getSettings, occupancy, promoteStandby, forfeitUnpaidByPhase, runEnforcement, enforceDeadlines } = require('./deadlines');
-const { verifySignature, handleLineEvent, pushToGroup } = require('./linebot');
+const { verifySignature, handleLineEvent, pushToGroup, pushToUser, pushToLineUser, refreshSourceNames, summarizeMessages } = require('./linebot');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -683,6 +683,8 @@ function startServer() {
     const paymentProofs = await getAll("SELECT * FROM payment_proofs");
     const settings = await getAll("SELECT * FROM settings");
     const feedback = await getAll("SELECT * FROM feedback");
+    const lineMessages = await getAll("SELECT * FROM line_messages");
+    const lineSources = await getAll("SELECT * FROM line_sources");
 
     const backup = {
       version: 1,
@@ -691,7 +693,9 @@ function startServer() {
       registrations,
       payment_proofs: paymentProofs,
       settings,
-      feedback
+      feedback,
+      line_messages: lineMessages,
+      line_sources: lineSources
     };
 
     const json = JSON.stringify(backup, null, 2);
@@ -716,6 +720,8 @@ function startServer() {
         "DELETE FROM registrations",
         "DELETE FROM feedback",
         "DELETE FROM settings",
+        "DELETE FROM line_messages",
+        "DELETE FROM line_sources",
         "DELETE FROM clubs WHERE is_admin = 0"
       ], 'write');
 
@@ -758,6 +764,24 @@ function startServer() {
           args: [f.id, f.club_id || null, f.display_name || '', f.category || '其他', f.message, f.status || 'open', f.created_at || null]
         }));
         await dbConn.batch(fbStmts, 'write');
+      }
+
+      // Restore line messages
+      if (backup.line_messages && backup.line_messages.length > 0) {
+        const lmStmts = backup.line_messages.map(m => ({
+          sql: "INSERT OR REPLACE INTO line_messages (id, source_type, source_id, sender_id, message, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+          args: [m.id, m.source_type, m.source_id, m.sender_id || null, m.message, m.created_at || null]
+        }));
+        await dbConn.batch(lmStmts, 'write');
+      }
+
+      // Restore line sources
+      if (backup.line_sources && backup.line_sources.length > 0) {
+        const lsStmts = backup.line_sources.map(s => ({
+          sql: "INSERT OR REPLACE INTO line_sources (source_type, source_id, source_name, member_count, last_message_at) VALUES (?, ?, ?, ?, ?)",
+          args: [s.source_type, s.source_id, s.source_name || null, s.member_count || null, s.last_message_at || null]
+        }));
+        await dbConn.batch(lsStmts, 'write');
       }
 
       res.json({ message: `還原成功：${backup.clubs.length} 個社團、${backup.registrations.length} 筆報名` });
@@ -871,6 +895,73 @@ function startServer() {
       const ok = await pushToGroup(message);
       if (!ok) return res.status(501).json({ error: 'LINE 尚未設定（缺少環境變數或 bot 尚未加入群組）' });
       res.json({ message: '已推播到 LINE 群組' });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ===== LINE 對話彙整與轉送 =====
+  app.get('/api/admin/line-sources', authMiddleware, adminMiddleware, async (req, res) => {
+    try {
+      const sources = await getAll(`
+        SELECT s.source_type, s.source_id, s.source_name, s.member_count, s.last_message_at,
+          (SELECT COUNT(*) FROM line_messages m
+           WHERE m.source_type = s.source_type AND m.source_id = s.source_id) as message_count
+        FROM line_sources s
+        ORDER BY s.last_message_at DESC
+      `);
+      res.json(sources);
+    } catch (err) {
+      console.error('Line sources error:', err.message);
+      res.status(500).json({ error: '載入失敗' });
+    }
+  });
+
+  app.post('/api/admin/line-sources/refresh', authMiddleware, adminMiddleware, async (req, res) => {
+    try {
+      const updated = await refreshSourceNames();
+      res.json({ message: `已更新 ${updated} 個來源名稱`, updated });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/admin/line-digest', authMiddleware, adminMiddleware, async (req, res) => {
+    try {
+      const { source_type, source_id, since, until, kind } = req.body || {};
+      if (!source_type || !source_id) return res.status(400).json({ error: '請選擇彙整來源' });
+      if (!['group', 'user'].includes(source_type)) return res.status(400).json({ error: '來源類型不正確' });
+
+      let sql = "SELECT * FROM line_messages WHERE source_type = ? AND source_id = ?";
+      const params = [source_type, String(source_id)];
+      if (since) { sql += " AND created_at >= ?"; params.push(since); }
+      if (until) { sql += " AND created_at <= ?"; params.push(until); }
+      sql += " ORDER BY created_at ASC LIMIT 500";
+
+      const rows = await getAll(sql, params);
+      if (rows.length === 0) return res.status(400).json({ error: '此時間範圍內沒有對話紀錄' });
+
+      const digestKind = kind === 'questions' ? 'questions' : 'summary';
+      const text = await summarizeMessages(rows, digestKind);
+      if (!text) return res.status(500).json({ error: 'AI 彙整失敗，請稍後再試' });
+      res.json({ digest: text, count: rows.length, source_type, source_id });
+    } catch (err) {
+      console.error('Line digest error:', err.message);
+      res.status(500).json({ error: '彙整失敗: ' + err.message });
+    }
+  });
+
+  app.post('/api/admin/line-send', authMiddleware, adminMiddleware, async (req, res) => {
+    try {
+      const { target_type, target_id, text } = req.body || {};
+      const message = text ? String(text).trim() : '';
+      if (!target_type || !target_id) return res.status(400).json({ error: '請選擇傳送對象' });
+      if (!message) return res.status(400).json({ error: '請輸入傳送內容' });
+      if (!['group', 'user'].includes(target_type)) return res.status(400).json({ error: '對象類型不正確' });
+
+      const ok = await pushToLineUser(String(target_id), message);
+      if (!ok) return res.status(501).json({ error: '傳送失敗：LINE 尚未設定，或對象非好友（個別社需先加官方帳號為好友）' });
+      res.json({ message: '已傳送' });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }

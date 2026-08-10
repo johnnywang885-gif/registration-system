@@ -61,6 +61,22 @@ async function initDatabase() {
       message TEXT NOT NULL,
       status TEXT DEFAULT 'open',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`,
+    `CREATE TABLE IF NOT EXISTS line_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      source_type TEXT NOT NULL,
+      source_id TEXT NOT NULL,
+      sender_id TEXT,
+      message TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`,
+    `CREATE TABLE IF NOT EXISTS line_sources (
+      source_type TEXT NOT NULL,
+      source_id TEXT NOT NULL,
+      source_name TEXT,
+      member_count INTEGER,
+      last_message_at DATETIME,
+      PRIMARY KEY (source_type, source_id)
     )`
   ], 'write');
 

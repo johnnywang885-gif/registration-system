@@ -14,18 +14,20 @@ No lint, typecheck, or test scripts exist. This is a plain JS project with no bu
 `dotenv` auto-loads `.env` (gitignored). The local `.env` has **empty** `TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN` — real Turso credentials exist only on Railway. `npm start` locally boots fine but every `/api` call returns 500 until a real Turso URL/token is supplied.
 
 ## Verification (no test framework)
-- Syntax check: `node --check server.js deadlines.js database.js auth.js`
+- Syntax check: `node --check server.js deadlines.js database.js auth.js linebot.js`
 - `@libsql/client` accepts `file:` URLs, so the whole stack (database.js + deadlines.js + server.js) runs against a local SQLite file: set `TURSO_DATABASE_URL=file:C:/abs/path.db`, `TURSO_AUTH_TOKEN=`, then call `initDatabase()` + `runEnforcement()` directly or boot `server.js`.
 - Real-data offline test (never touches production): login as admin (use the real production password — see Auth section; the default `admin123` works only on fresh local DBs) → `GET /api/admin/backup` returns full JSON (`clubs`, `registrations`, `payment_proofs`, `settings`) → seed it into a local `file:` copy → run `deadlines.js` enforcement against the copy. Do NOT point enforcement at the real Turso DB.
 - `deadlines.js` `taipeiToday()` always uses the real Taipei date — to simulate other phases, edit the `settings` rows (deadline dates) in the local copy, not the clock.
 - Windows gotcha: a process holding a `file:` DB (e.g. a spawned `server.js`) locks the file; kill the process before deleting/reopening it.
 - Windows console mangles Chinese unless UTF-8: in PowerShell run `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8` before `node`.
+- `test/check_gemini_key.js` — 驗證任一把 Gemini key 的可用性（$env:GEMINI_API_KEY + 可選 $env:GEMINI_MODEL）：① 一般問答是否通 ② 網路搜尋（Grounding with Google Search）是否可用（可用＝付費 key，可開 `GEMINI_GROUNDING=on`）；key 無效時 exit 1。遇 429 卡額度時也用它逐模型實測。
 
 ### Working regression scripts (`test/`)
 - `review_a_flap.js` — standalone DB test (no HTTP): seeds paid/unpaid clubs with Phase 1 standby, runs `runEnforcement()` 5×; asserts no promote↔forfeit flapping (paid-club standby promoted, unpaid-club standby stays).
 - `review_b_export.js` — boots real server on PORT 34891, seeds the 4 statuses, `GET /api/admin/export`, asserts `standby → 候補` in the 報名資料 sheet (guards the export status mapping).
 - `review_c_backup.js` — restores a real backup JSON into a local `file:` copy and runs `runEnforcement()` as a no-op sanity check (p2 already passed); never touches the live Turso DB.
 - `review_d_rule_timeline.js` — boots real server on PORT 34892, drives a full 7-stage timeline over HTTP (phase-1 overflow → promote → pay → forfeit → phase-2 standby / manual promote).
+- `review_e_line_digest.js` — boots real server on PORT 34895, seeds `line_sources`/`line_messages`, then exercises the LINE 彙整 stack over HTTP: sources list w/ message counts, empty-range 400, digest (200+digest with a real `GEMINI_API_KEY`, else graceful 500), line-send 501 without LINE config, source-name refresh (0 updated without token).
 - `sim_phase2_144_30.js` — boots real server on PORT 34893; scenario simulation (Phase 1: 144 paid + paid-club standby; Phase 2: 30 incl. those standby) printing per-club tables. Reuse as a template for "what if" simulations.
 - `sim_185_30.js` — boots real server on PORT 34904; scenario simulation (185 Phase-1 registrations incl. 5 big clubs over the 10-seat guarantee → 50 unpaid forfeits → 30 Phase-2 registrations) and keeps the DB alive for browser verification. Reuse as template too.
 - `sim_frontend_boot.js` — boots real server on PORT 34900, seeds clubs 2401/2402, then stays alive (`setInterval`) for manual/browser frontend testing. **Use this instead of `npm start` when you need a running server for MCP browser work.**
@@ -63,7 +65,10 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 - All DB functions (`getAll`, `getOne`, `runQuery`, `insert`) check `if (!db)` and throw "Database not connected" if called before init completes
 - `db.batch()` for multi-statement operations (table creation, bulk inserts)
 - `saveDatabase()` is a no-op (kept for backward compat)
-- Tables: `clubs`, `registrations`, `payment_proofs`, `settings`, `feedback`
+- Tables: `clubs`, `registrations`, `payment_proofs`, `settings`, `feedback`, `line_messages`, `line_sources`
+- `line_messages` — LINE 對話紀錄（`source_type` group/user、`source_id` groupId|userId、`sender_id`、`message`、`created_at`，UTC datetime）；bot 收到每則文字訊息即 INSERT
+- `line_sources` — LINE 來源清單（PK `(source_type, source_id)`），每個 LINE 事件即時 `ON CONFLICT ... DO UPDATE` 更新 `last_message_at`（upsert 不可用 `INSERT OR REPLACE`，會清掉名稱欄位）；`source_name`/`member_count` 由管理員在後台按「重新整理名稱」補抓（群組→`GET /v2/bot/group/{id}/summary`、用戶→`GET /v2/bot/profile/{id}`），失敗保留原值
+- 兩表皆納入 backup/restore JSON（`line_messages`/`line_sources` 節）
 
 ### Registration Status Flow
 - `registered` → default status when a club member registers (occupies a seat)
@@ -127,6 +132,8 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 | `LINE_CHANNEL_SECRET` | No | LINE Messaging API channel secret（webhook 簽章驗證用） |
 | `LINE_CHANNEL_ACCESS_TOKEN` | No | LINE Messaging API access token（回覆/推播用） |
 | `GEMINI_API_KEY` | No | Gemini API key（bot AI 回覆用；未設時 bot 回覆「AI 助理尚未設定」） |
+| `GEMINI_MODEL` | No | Gemini 模型名稱（預設 `gemini-3.5-flash-lite`，可改任何模型名如 `gemini-2.5-flash`；改動後重啟生效） |
+| `GEMINI_GROUNDING` | No | 設 `on` 才啟用 Gemini Grounding with Google Search（bot 可上網查資料再回答）；**Free tier key 無法使用搜尋**，呼叫失敗會自動退回首選模式，bot 不中斷（付費 key 後於 Railway 開啟） |
 | `SYSTEM_URL` | No | 對外網址（bot 知識庫與簡介連結用，預設為目前 production URL） |
 | `PORT` | No | Set automatically by Railway |
 
@@ -186,6 +193,10 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 - `POST /api/feedback` — submit feedback (auth required; categories 操作問題/錯誤回報/功能建議/其他, max 2000 chars)
 - `GET /api/admin/feedback` / `PUT /api/admin/feedback/:id` — list (open first, newest first) / toggle open↔done (admin only)
 - `POST /api/admin/line-announce` — push a message to the LINE group the bot joined (admin only; 501 if LINE not configured)
+- `GET /api/admin/line-sources` — list LINE 彙整 sources (`line_sources` + per-source message counts; admin only)
+- `POST /api/admin/line-sources/refresh` — re-fetch source names from LINE (group summary / profile APIs; admin only; failures keep old values)
+- `POST /api/admin/line-digest` — digest messages from one source (body: `source_type`/`source_id`/`since`/`until`/`kind` summary|questions; max 500 rows; 400 when no messages in range; 500 graceful when Gemini unavailable)
+- `POST /api/admin/line-send` — push arbitrary text to a target (`target_type` group|user + `target_id`; user push needs the user to have added the official account as friend, else 501)
 - `POST /line/webhook` — LINE Messaging API webhook (no auth; validates `X-Line-Signature` HMAC-SHA256 with `LINE_CHANNEL_SECRET`; empty-event requests pass WITHOUT signature so LINE console URL verification works; acks 200 then processes events async)
 - `GET /api/payment/file/:id` — view payment proof file (auth required: admin or owning club)
 - `GET /api/payment/my-uploads` (club) / `GET /api/payment/all` (admin) — list payment proofs
@@ -254,10 +265,12 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 
 ### Feedback & LINE Bot
 - `public/feedback.html` (auth required) submits to `feedback` table via `POST /api/feedback`; admin views/marks via 意見回饋 tab (`/api/admin/feedback`).
-- `linebot.js` — LINE Messaging API integration: `verifySignature()` (HMAC-SHA256, needs rawBody captured via `express.json({ verify })`), `handleLineEvent()` (ANY event with a `groupId` — join or group message — upserts `line_group_id` into settings; join also sends a welcome message; text messages containing 意見/建議/回報/改進/壞掉/希望/bug → saved to `feedback` with a guessed category, else Gemini `gemini-2.5-flash` Q&A grounded in AGENTS rules + live deadline settings), `pushToGroup()` (announcements via 系統設定 tab button → `POST /api/admin/line-announce`; 501 when unconfigured).
-- LINE 群組限制：bot 只在被 @提及 時收到群組訊息；webhook 先 ack 200 再異步處理事件。`feedback` 表含在 backup/restore 中。
+- `linebot.js` — LINE Messaging API integration: `verifySignature()` (HMAC-SHA256, needs rawBody captured via `express.json({ verify })`), `handleLineEvent()` (records every text message into `line_messages` + upserts `line_sources`; ANY event with a `groupId` — join or group message — upserts `line_group_id` into settings; join also sends a welcome message; text messages containing 意見/建議/回報/改進/壞掉/希望/bug → saved to `feedback` with a guessed category, else Gemini Q&A (model = `GEMINI_MODEL`, 預設 `gemini-3.5-flash-lite`) — general assistant, registration-system questions answered precisely, optional `googleSearch` grounding behind `GEMINI_GROUNDING` with automatic fallback to ungrounded), `pushToGroup()` (announcements via 系統設定 tab button → `POST /api/admin/line-announce`; 501 when unconfigured), `pushToLineUser()` (arbitrary target push for the LINE 彙整 send flow), `refreshSourceNames()` (enrich `line_sources` names via group summary / profile APIs), `summarizeMessages()` (digest a message list via Gemini — 重點摘要 or 待確認疑問清單).
+- LINE 群組訊息：現行平台會把群組內**所有**訊息事件送到 bot（無需 @提及；被 @ 時額外帶 `mention.mentionees[].isSelf=true` metadata）。webhook 先 ack 200 再異步處理事件。`feedback` 表含在 backup/restore 中。
+- LINE 彙整與轉送（管理後台「LINE 彙整」tab）：來源＝`line_messages` 去重（群組/個別社 1:1 都收）；管理員選來源＋時間範圍＋彙整類型 →「彙整並直接傳送」一鍵呼叫 `POST /api/admin/line-digest` 產出後 `POST /api/admin/line-send` 推送到指定對象（個別社 push 需要對方已加官方帳號好友，非好友 501）；「僅預覽」只產出不送出。
 - LINE Developers 主控台（非程式碼）gotchas：① Channel → Messaging API 頁籤需將「使用 Webhook」設為 ON，Webhook URL 指向 `https://.../line/webhook`；② 官方帳號「自動回應訊息」若未停用，用戶會同時收到 LINE 預設回覆與 bot 回覆（設定位置：manager.line.biz → 設定 → 回應訊息）；③ 「自動退出群組」開關若開啟，bot 被邀請進群會立刻自動退出（曾踩坑：bot 反覆進群即退，直到主控台關閉該設定）。
-- Gemini 模型注意：曾因 API key 對 `gemini-2.0-flash` 免費額度為 0（429 limit:0）導致 bot 回退「AI 助理尚未設定」，改用 `gemini-2.5-flash` 後正常；若未來再遇 429，可先用 `generateContent` 實測各模型額度再改 `linebot.js` 的 `GEMINI_API`。
+- Gemini 模型注意：模型名稱由 `GEMINI_MODEL` 控制（預設 `gemini-3.5-flash-lite`），改動後重啟生效。曾因 API key 對 `gemini-2.0-flash` 免費額度為 0（429 limit:0）導致 bot 回退「AI 助理尚未設定」，改用 `gemini-2.5-flash` 後正常；若未來再遇 429，可先用 `generateContent` 實測各模型額度，再調整 `GEMINI_MODEL`。
+- 免費 key 可用範圍：**一般問答與彙整（無搜尋）免費 key 即可**（`gemini-3.5-flash-lite` 輸入/輸出免費）；**網路搜尋（Grounding with Google Search）官方明載 Free tier 不支援，必須付費 key**。付費後 Gemini 3 系每月 5,000 次搜尋免費、超過 $14/1000 次；付費另享較高 rate limit（免費 tier 有 RPM/RPD 上限，群組訊息量大時可能卡額度）。
 - E2E 驗證撇步（不需真實用戶）：用 `LINE_CHANNEL_SECRET` 對測試 body 算 HMAC-SHA256 簽章 POST 到 `/line/webhook`（PowerShell `HMACSHA256` + Base64）→ 200 代表部署實例的 secret 正確；帶 `source.groupId` 的訊息事件會寫入 `line_group_id`，可再用 Railway variables 拿到的 Turso creds 對正式庫 SELECT 確認。
 
 ## File Structure

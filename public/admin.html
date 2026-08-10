@@ -29,6 +29,7 @@
         <div class="tab" data-tab="settings">系統設定</div>
         <div class="tab" data-tab="standby">遞補順序</div>
         <div class="tab" data-tab="feedback">意見回饋</div>
+        <div class="tab" data-tab="linedigest">LINE 彙整</div>
       </div>
 
       <!-- 報名管理 -->
@@ -204,6 +205,46 @@
         </div>
         <div id="feedbackTable"></div>
       </div>
+
+      <!-- LINE 彙整 -->
+      <div class="tab-content" id="tab-linedigest">
+        <h3 style="font-size:15px; color:#4a3728; margin-bottom:12px;">群組／個別社對話彙整與轉送（對話由 bot 自動收集，僅管理員可見）</h3>
+        <div class="filter-bar">
+          <div class="form-group">
+            <label>彙整來源</label>
+            <select id="digestSource"><option value="">載入中...</option></select>
+          </div>
+          <div class="form-group">
+            <label>時間範圍</label>
+            <select id="digestRange">
+              <option value="1">最近 1 天</option>
+              <option value="3">最近 3 天</option>
+              <option value="7" selected>最近 7 天</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>彙整類型</label>
+            <select id="digestKind">
+              <option value="summary">重點摘要</option>
+              <option value="questions">待確認疑問清單</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>傳送對象</label>
+            <select id="digestTarget"><option value="">與來源相同</option></select>
+          </div>
+        </div>
+        <div class="btn-group">
+          <button class="btn btn-primary" id="btnDigestSend" onclick="runLineDigest(true)">彙整並直接傳送</button>
+          <button class="btn btn-secondary" onclick="runLineDigest(false)">僅預覽</button>
+          <button class="btn btn-warning btn-sm" onclick="refreshLineSources()">重新整理名稱</button>
+          <span id="digestMsg" style="margin-left:12px; font-size:13px; color:#4a3728;"></span>
+        </div>
+        <div class="loading hidden" id="loadingDigest">
+          <div class="spinner"></div>
+        </div>
+        <div id="digestResult" style="margin-top:16px;"></div>
+      </div>
     </div>
   </div>
 
@@ -239,6 +280,9 @@
         }
         if (tab.dataset.tab === 'feedback') {
           loadFeedback();
+        }
+        if (tab.dataset.tab === 'linedigest') {
+          loadLineSources();
         }
       });
     });
@@ -1015,6 +1059,122 @@
         msgBox.className = 'alert alert-error mt-10';
         msgBox.textContent = '清除失敗: ' + err.message;
         msgBox.classList.remove('hidden');
+      }
+    }
+
+    // === LINE Digest ===
+    let lineSources = [];
+
+    async function loadLineSources() {
+      try {
+        const res = await fetch('/api/admin/line-sources', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (res.status === 401) { localStorage.clear(); window.location.href = '/'; return; }
+        const data = await res.json();
+        lineSources = data;
+
+        const sourceSel = document.getElementById('digestSource');
+        const targetSel = document.getElementById('digestTarget');
+        sourceSel.innerHTML = '<option value="">請選擇來源</option>';
+        targetSel.innerHTML = '<option value="">與來源相同</option>';
+
+        if (data.length === 0) {
+          sourceSel.innerHTML = '<option value="">尚無對話紀錄（bot 收到訊息後才會出現）</option>';
+          return;
+        }
+
+        data.forEach(s => {
+          const label = `${s.source_type === 'group' ? '群組' : '個別社'}：${esc(s.source_name || s.source_id)} (${s.message_count} 則)`;
+          const val = `${s.source_type}|${esc(s.source_id)}`;
+          sourceSel.innerHTML += `<option value="${val}">${label}</option>`;
+          targetSel.innerHTML += `<option value="${val}">${label}</option>`;
+        });
+      } catch (err) {
+        toast('載入失敗', 'error');
+      }
+    }
+
+    async function refreshLineSources() {
+      const msg = document.getElementById('digestMsg');
+      msg.textContent = '更新中...';
+      try {
+        const res = await fetch('/api/admin/line-sources/refresh', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        const data = await res.json();
+        toast(data.message || data.error || '更新完成', res.ok ? 'success' : 'error');
+        loadLineSources();
+      } catch (err) {
+        toast('更新失敗', 'error');
+      }
+      msg.textContent = '';
+    }
+
+    function sinceFromRange(days) {
+      return new Date(Date.now() - days * 86400000).toISOString().replace('T', ' ').slice(0, 19);
+    }
+
+    async function runLineDigest(send) {
+      const sourceVal = document.getElementById('digestSource').value;
+      const msg = document.getElementById('digestMsg');
+      if (!sourceVal) { toast('請先選擇彙整來源', 'error'); return; }
+
+      const parts = sourceVal.split('|');
+      const sourceType = parts[0];
+      const sourceId = decodeURIComponent(parts.slice(1).join('|'));
+      const days = parseInt(document.getElementById('digestRange').value) || 7;
+      const kind = document.getElementById('digestKind').value;
+      const targetVal = document.getElementById('digestTarget').value;
+
+      const btn = document.getElementById('btnDigestSend');
+      btn.disabled = true;
+      document.getElementById('loadingDigest').classList.remove('hidden');
+      msg.textContent = send ? '彙整並傳送中...' : '彙整中...';
+
+      try {
+        const res = await fetch('/api/admin/line-digest', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify({ source_type: sourceType, source_id: sourceId, since: sinceFromRange(days), kind })
+        });
+        const data = await res.json();
+        if (!res.ok) { toast(data.error || '彙整失敗', 'error'); return; }
+
+        document.getElementById('digestResult').innerHTML = `
+          <div class="card" style="margin-bottom:0;">
+            <h4 style="margin-bottom:12px;">彙整結果（${data.count} 則訊息）</h4>
+            <div style="white-space:pre-wrap; line-height:1.8; font-size:14px;">${esc(data.digest)}</div>
+          </div>`;
+
+        if (send) {
+          let targetType = sourceType;
+          let targetId = sourceId;
+          if (targetVal) {
+            const tParts = targetVal.split('|');
+            targetType = tParts[0];
+            targetId = decodeURIComponent(tParts.slice(1).join('|'));
+          }
+          const sendRes = await fetch('/api/admin/line-send', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+            body: JSON.stringify({ target_type: targetType, target_id: targetId, text: data.digest })
+          });
+          const sendData = await sendRes.json();
+          if (sendRes.ok) {
+            toast('已傳送彙整結果');
+            msg.textContent = '✓ 已傳送';
+          } else {
+            toast(sendData.error || '傳送失敗', 'error');
+          }
+        }
+      } catch (err) {
+        toast('彙整失敗: ' + err.message, 'error');
+      } finally {
+        btn.disabled = false;
+        document.getElementById('loadingDigest').classList.add('hidden');
+        if (!send || !msg.textContent) msg.textContent = '';
       }
     }
 
