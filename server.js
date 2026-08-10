@@ -10,7 +10,7 @@ const XLSX = require('xlsx');
 const { initDatabase, getAll, getOne, runQuery, insert, importClubs, saveDatabase, getDb } = require('./database');
 const { generateToken, authMiddleware, adminMiddleware } = require('./auth');
 const { taipeiToday, phaseState, getSettings, occupancy, promoteStandby, forfeitUnpaidByPhase, runEnforcement, enforceDeadlines } = require('./deadlines');
-const { verifySignature, handleLineEvent, pushToGroup, pushToUser, pushToLineUser, refreshSourceNames, summarizeMessages } = require('./linebot');
+const { verifySignature, handleLineEvent, pushToGroup, pushToUser, pushToLineUser, refreshSourceNames, summarizeMessages, generateAnnouncement } = require('./linebot');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -963,6 +963,89 @@ function startServer() {
       if (!ok) return res.status(501).json({ error: '傳送失敗：LINE 尚未設定，或對象非好友（個別社需先加官方帳號為好友）' });
       res.json({ message: '已傳送' });
     } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ===== AI 公告產生與轉發 =====
+  app.post('/api/admin/announce/generate', authMiddleware, adminMiddleware, async (req, res) => {
+    try {
+      const raw = req.body && req.body.raw ? String(req.body.raw).trim() : '';
+      const instructions = req.body && req.body.instructions ? String(req.body.instructions).trim() : '';
+      if (!raw) return res.status(400).json({ error: '請貼上原始資料' });
+      if (raw.length > 8000) return res.status(400).json({ error: '原始資料過長（上限 8000 字）' });
+
+      const [broadcast, perClub] = await Promise.all([
+        generateAnnouncement(raw, instructions, 'group'),
+        generateAnnouncement(raw, instructions, 'clubs')
+      ]);
+      if (!broadcast && !perClub) return res.status(500).json({ error: 'AI 公告產生失敗，請稍後再試（或確認 Gemini 已設定）' });
+      res.json({ broadcast, perClub: perClub || [] });
+    } catch (err) {
+      console.error('Announce generate error:', err.message);
+      res.status(500).json({ error: '產生失敗: ' + err.message });
+    }
+  });
+
+  app.post('/api/admin/announce/match', authMiddleware, adminMiddleware, async (req, res) => {
+    try {
+      const clubs = Array.isArray(req.body && req.body.clubs) ? req.body.clubs : [];
+      if (clubs.length === 0) return res.status(400).json({ error: '沒有要比對的社團' });
+      const sources = await getAll(`
+        SELECT source_type, source_id, source_name
+        FROM line_sources
+        WHERE source_name IS NOT NULL AND source_name != ''
+      `);
+      const results = clubs.map(c => {
+        const id = String(c.club_id || '');
+        const name = String(c.club_name || '');
+        const candidates = sources.filter(s => {
+          const n = String(s.source_name || '');
+          return (id && n.includes(id)) || (name && n.includes(name));
+        });
+        candidates.sort((a, b) => (a.source_type === 'group' ? 0 : 1) - (b.source_type === 'group' ? 0 : 1));
+        return {
+          club_id: id,
+          club_name: name,
+          candidates: candidates.map(x => ({ source_type: x.source_type, source_id: x.source_id, source_name: x.source_name }))
+        };
+      });
+      res.json(results);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/admin/announce/send', authMiddleware, adminMiddleware, async (req, res) => {
+    try {
+      const { mode, text, items } = req.body || {};
+      if (mode === 'group') {
+        const message = text ? String(text).trim() : '';
+        if (!message) return res.status(400).json({ error: '請輸入公告內容' });
+        const ok = await pushToGroup(message);
+        if (!ok) return res.status(501).json({ error: '傳送失敗：LINE 尚未設定，或 bot 尚未加入主群組' });
+        return res.json({ message: '已推播到 LINE 主群組' });
+      }
+      if (mode === 'clubs') {
+        if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ error: '沒有要傳送的內容' });
+        const delivered = [];
+        const failed = [];
+        for (const item of items) {
+          const targetId = String(item.target_id || '').trim();
+          const message = String(item.message || '').trim();
+          if (!targetId || !message) {
+            failed.push({ club_id: item.club_id || '', club_name: item.club_name || '', reason: '缺少傳送對象或內容' });
+            continue;
+          }
+          const ok = await pushToLineUser(targetId, message);
+          if (ok) delivered.push({ club_id: item.club_id || '', club_name: item.club_name || '' });
+          else failed.push({ club_id: item.club_id || '', club_name: item.club_name || '', reason: 'LINE 未設定或對象非好友/無效' });
+        }
+        return res.json({ message: `已傳送 ${delivered.length} 社，失敗 ${failed.length} 社`, delivered, failed });
+      }
+      res.status(400).json({ error: '模式不正確' });
+    } catch (err) {
+      console.error('Announce send error:', err.message);
       res.status(500).json({ error: err.message });
     }
   });

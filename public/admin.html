@@ -30,6 +30,7 @@
         <div class="tab" data-tab="standby">遞補順序</div>
         <div class="tab" data-tab="feedback">意見回饋</div>
         <div class="tab" data-tab="linedigest">LINE 彙整</div>
+        <div class="tab" data-tab="announce">AI 公告</div>
       </div>
 
       <!-- 報名管理 -->
@@ -244,6 +245,29 @@
           <div class="spinner"></div>
         </div>
         <div id="digestResult" style="margin-top:16px;"></div>
+      </div>
+
+      <!-- AI 公告 -->
+      <div class="tab-content" id="tab-announce">
+        <h3 style="font-size:15px; color:#4a3728; margin-bottom:12px;">AI 公告產生與轉發（貼入原始資料 → Gemini 產出群組版＋各社個別版 → 比對 LINE 來源轉發）</h3>
+        <div class="card" style="margin-bottom:16px;">
+          <div class="form-group">
+            <label>原始資料（社號/社名/日期/事項，可直接貼上）</label>
+            <textarea id="annRaw" rows="6" placeholder="例：2408 羅娜 115/7/28&#10;2419 久美（缺名冊紙本）&#10;2426 豐丘 115/7/27&#10;請轉知各社盡速繳費"></textarea>
+          </div>
+          <div class="form-group">
+            <label>補充指示（選擇性）</label>
+            <textarea id="annInstructions" rows="2" placeholder="例：請先繳納已收訖費用，再通知社員補繳；2419 需補交名冊"></textarea>
+          </div>
+          <div class="btn-group">
+            <button class="btn btn-primary" onclick="runAnnounceGenerate()">產生公告</button>
+            <span id="annMsg" style="margin-left:12px; font-size:13px; color:#4a3728;"></span>
+          </div>
+          <div class="loading hidden" id="loadingAnnounce">
+            <div class="spinner"></div>
+          </div>
+        </div>
+        <div id="annResult" style="margin-top:4px;"></div>
       </div>
     </div>
   </div>
@@ -1176,6 +1200,166 @@
         document.getElementById('loadingDigest').classList.add('hidden');
         if (!send || !msg.textContent) msg.textContent = '';
       }
+    }
+
+    // === AI 公告 ===
+    let announceState = { broadcast: '', items: [] };
+
+    async function runAnnounceGenerate() {
+      const raw = document.getElementById('annRaw').value.trim();
+      const instructions = document.getElementById('annInstructions').value.trim();
+      const msg = document.getElementById('annMsg');
+      if (!raw) { toast('請先貼上原始資料', 'error'); return; }
+      document.getElementById('loadingAnnounce').classList.remove('hidden');
+      msg.textContent = 'AI 產生中（約 10-30 秒）...';
+      try {
+        const res = await fetch('/api/admin/announce/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify({ raw, instructions })
+        });
+        const data = await res.json();
+        if (!res.ok) { toast(data.error || '產生失敗', 'error'); return; }
+        await renderAnnounceResult(data);
+      } catch (err) {
+        toast('產生失敗: ' + err.message, 'error');
+      } finally {
+        document.getElementById('loadingAnnounce').classList.add('hidden');
+        msg.textContent = '';
+      }
+    }
+
+    async function renderAnnounceResult(data) {
+      const perClub = data.perClub || [];
+      let matchMap = {};
+      if (perClub.length > 0) {
+        try {
+          const res = await fetch('/api/admin/announce/match', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+            body: JSON.stringify({ clubs: perClub.map(p => ({ club_id: p.club_id, club_name: p.club_name })) })
+          });
+          if (res.ok) {
+            (await res.json()).forEach(m => { matchMap[m.club_id] = m; });
+          }
+        } catch (e) {}
+      }
+      announceState = {
+        broadcast: data.broadcast || '',
+        items: perClub.map(p => ({ club_id: p.club_id, club_name: p.club_name, message: p.message, match: matchMap[p.club_id] }))
+      };
+
+      const out = [];
+      out.push('<div class="card" style="margin-bottom:16px;">');
+      out.push('<h4 style="margin-bottom:12px;">① 群組總公告版（發到區會主群組）</h4>');
+      out.push('<textarea id="annBroadcast" rows="8">' + esc(data.broadcast || '') + '</textarea>');
+      out.push('<div class="btn-group" style="margin-top:10px;">');
+      out.push('<button class="btn btn-primary" onclick="sendAnnounceGroup()">推播到主群組</button>');
+      out.push('</div></div>');
+
+      if (perClub.length > 0) {
+        out.push('<div class="card" style="margin-bottom:16px;">');
+        out.push('<h4 style="margin-bottom:12px;">② 各社個別版（共 ' + perClub.length + ' 社，每社只含自己的事項）</h4>');
+        out.push('<div class="btn-group" style="margin-bottom:10px;">');
+        out.push('<button class="btn btn-warning" onclick="sendAnnounceClubs()">全部傳送</button>');
+        out.push('</div>');
+        perClub.forEach((p, i) => {
+          const m = matchMap[p.club_id];
+          const cand = (m && m.candidates) || [];
+          out.push('<div class="card" style="margin-bottom:12px; padding:12px;">');
+          out.push('<div style="font-weight:bold; margin-bottom:8px;">' + esc(p.club_id) + ' ' + esc(p.club_name) +
+            (cand.length ? '' : ' <span class="badge badge-forfeited">未比對到來源</span>') + '</div>');
+          out.push('<textarea class="annMsgText" data-idx="' + i + '" rows="4">' + esc(p.message || '') + '</textarea>');
+          out.push('<div class="filter-bar" style="margin-top:8px; align-items:center;">');
+          out.push('<div class="form-group" style="flex:2; margin-bottom:0;">');
+          out.push('<label>傳送對象</label>');
+          out.push('<select id="annTarget' + i + '">');
+          out.push('<option value="">未比對到來源（略過）</option>');
+          cand.forEach(c => {
+            out.push('<option value="' + c.source_type + '|' + esc(c.source_id) + '">' +
+              (c.source_type === 'group' ? '群組' : '個別社') + '：' + esc(c.source_name) + '</option>');
+          });
+          out.push('</select></div>');
+          out.push('<div class="btn-group">');
+          out.push('<button class="btn btn-secondary btn-sm" onclick="sendAnnounceClub(' + i + ')">傳送此社</button>');
+          out.push('<span id="annClubResult' + i + '" style="margin-left:8px; font-size:12px; color:#4a3728;"></span>');
+          out.push('</div></div></div>');
+        });
+        out.push('</div>');
+      }
+      document.getElementById('annResult').innerHTML = out.join('');
+      document.querySelectorAll('#annResult select').forEach(sel => { if (sel.options.length > 1) sel.selectedIndex = 1; });
+    }
+
+    function collectAnnounceItems() {
+      const items = [];
+      document.querySelectorAll('.annMsgText').forEach((ta, i) => {
+        const sel = document.getElementById('annTarget' + i);
+        const targetVal = sel && sel.value;
+        const it = announceState.items[i];
+        if (!targetVal || !targetVal.includes('|') || !it) return;
+        const parts = targetVal.split('|');
+        items.push({
+          club_id: it.club_id,
+          club_name: it.club_name,
+          message: ta.value.trim(),
+          target_type: parts[0],
+          target_id: decodeURIComponent(parts.slice(1).join('|'))
+        });
+      });
+      return items;
+    }
+
+    async function sendAnnounceGroup() {
+      const text = document.getElementById('annBroadcast').value.trim();
+      if (!text) { toast('公告內容為空', 'error'); return; }
+      try {
+        const res = await fetch('/api/admin/announce/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify({ mode: 'group', text })
+        });
+        const data = await res.json();
+        toast(data.message || data.error, res.ok ? 'success' : 'error');
+      } catch (err) { toast('傳送失敗: ' + err.message, 'error'); }
+    }
+
+    async function sendAnnounceClub(i) {
+      const sel = document.getElementById('annTarget' + i);
+      const targetVal = sel && sel.value;
+      if (!targetVal || !targetVal.includes('|')) { toast('此社未指定傳送對象', 'error'); return; }
+      const parts = targetVal.split('|');
+      const it = announceState.items[i];
+      const text = document.querySelectorAll('.annMsgText')[i].value.trim();
+      try {
+        const res = await fetch('/api/admin/announce/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify({
+            mode: 'clubs',
+            items: [{ club_id: it.club_id, club_name: it.club_name, message: text, target_type: parts[0], target_id: decodeURIComponent(parts.slice(1).join('|')) }]
+          })
+        });
+        const data = await res.json();
+        document.getElementById('annClubResult' + i).textContent = res.ok ? '✓ 已傳送' : (data.error || '傳送失敗');
+      } catch (err) { toast('傳送失敗: ' + err.message, 'error'); }
+    }
+
+    async function sendAnnounceClubs() {
+      const items = collectAnnounceItems();
+      if (items.length === 0) { toast('沒有已指定傳送對象的社團', 'error'); return; }
+      if (!confirm('確認傳送給 ' + items.length + ' 社？')) return;
+      try {
+        const res = await fetch('/api/admin/announce/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify({ mode: 'clubs', items })
+        });
+        const data = await res.json();
+        if (!res.ok) { toast(data.error || '傳送失敗', 'error'); return; }
+        data.delivered.forEach(d => toast('✓ ' + d.club_name + ' 已傳送', 'success'));
+        if (data.failed.length) toast('失敗 ' + data.failed.map(f => f.club_name).join('、'), 'error');
+      } catch (err) { toast('傳送失敗: ' + err.message, 'error'); }
     }
 
     // Init

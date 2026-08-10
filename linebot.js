@@ -1,11 +1,12 @@
 const crypto = require('crypto');
 const { getOne, runQuery, insert, getAll } = require('./database');
-const { getSettings } = require('./deadlines');
+const { getSettings, taipeiToday } = require('./deadlines');
 
 const CHANNEL_SECRET = process.env.LINE_CHANNEL_SECRET;
 const CHANNEL_ACCESS_TOKEN = process.env.LINE_CHANNEL_ACCESS_TOKEN;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_GROUNDING = ['on', '1', 'true'].includes(String(process.env.GEMINI_GROUNDING || '').toLowerCase());
+const GROUNDING_MAX_MONTH = parseInt(process.env.GEMINI_GROUNDING_MAX_MONTH || '4800', 10);
 const LINE_API = 'https://api.line.me/v2/bot';
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
 const GEMINI_API = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
@@ -101,15 +102,51 @@ async function buildKnowledgeBase() {
   ].join('\n');
 }
 
+// ===== Gemini 網路搜尋用量上限（每月計數，防觸動付費） =====
+function groundingMonthKey() {
+  return 'grounding_' + taipeiToday().slice(0, 7);
+}
+
+async function getGroundingUsage() {
+  const key = groundingMonthKey();
+  const row = await getOne("SELECT value FROM settings WHERE key = ?", [key]);
+  const used = parseInt((row && row.value) || '0', 10) || 0;
+  return { key, used, max: GROUNDING_MAX_MONTH };
+}
+
+async function canUseGrounding() {
+  if (!GEMINI_GROUNDING) return false;
+  try {
+    const { used, max } = await getGroundingUsage();
+    return used < max;
+  } catch (err) {
+    console.error('canUseGrounding error:', err.message);
+    return false;
+  }
+}
+
+async function recordGroundingUse() {
+  try {
+    const { key, used } = await getGroundingUsage();
+    await runQuery(
+      "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?",
+      [key, String(used + 1), String(used + 1)]
+    );
+  } catch (err) {
+    console.error('recordGroundingUse error:', err.message);
+  }
+}
+
 async function callGemini(system, userText, options = {}) {
   if (!GEMINI_API_KEY) return null;
   const { grounding = false, maxOutputTokens = 500 } = options;
+  const groundingOn = grounding && (await canUseGrounding());
   const payload = {
     systemInstruction: { parts: [{ text: system }] },
     contents: [{ role: 'user', parts: [{ text: userText }] }],
     generationConfig: { temperature: 0.3, maxOutputTokens }
   };
-  if (grounding && GEMINI_GROUNDING) {
+  if (groundingOn) {
     payload.tools = [{ googleSearch: {} }];
   }
 
@@ -132,9 +169,12 @@ async function callGemini(system, userText, options = {}) {
     }
   };
 
-  if (grounding && GEMINI_GROUNDING) {
+  if (groundingOn) {
     const first = await doRequest(payload);
-    if (first.ok) return first.text;
+    if (first.ok) {
+      await recordGroundingUse();
+      return first.text;
+    }
     console.error('Gemini grounding error:', first.status, '; retrying without grounding');
   }
 
@@ -158,6 +198,71 @@ async function summarizeMessages(rows, kind) {
     : '請把以下對話整理成重點摘要，條列呈現（每條一行），包含主題、結論與待辦事項。';
   const system = '你是對話整理助理，請用繁體中文、條列式、精簡輸出，不要編造對話中沒有出現的內容。';
   return callGemini(system, `${header}\n\n對話紀錄（依時間順序）：\n${lines.join('\n')}`, { maxOutputTokens: 1200 });
+}
+
+// ===== AI 公告產生（原始資料 → LINE 群組版／各社個別版） =====
+function parseClubAnnouncements(text, rawData) {
+  const match = String(text).match(/\[\s*\{[\s\S]*\}\s*\]/);
+  if (!match) return null;
+  let arr;
+  try {
+    arr = JSON.parse(match[0]);
+  } catch (err) {
+    return null;
+  }
+  if (!Array.isArray(arr)) return null;
+  const knownIds = new Set(String(rawData).match(/\b\d{4}\b/g) || []);
+  const items = arr
+    .filter(x => x && x.club_id && knownIds.has(String(x.club_id)) && x.message)
+    .map(x => ({
+      club_id: String(x.club_id),
+      club_name: String(x.club_name || ''),
+      message: String(x.message).trim()
+    }));
+  return items.length ? items : null;
+}
+
+async function generateAnnouncement(rawData, instructions, mode) {
+  const system =
+    '你是區會行政助理，負責把管理員提供的原始資料整理成可直接複製貼上的 LINE 通知。' +
+    '請用繁體中文、條列式、語氣親切簡潔，只能使用原始資料中出現的內容，不得自行增刪社團或事項。';
+  const note = instructions && String(instructions).trim() ? `\n補充指示：${String(instructions).trim()}` : '';
+
+  if (mode === 'clubs') {
+    const prompt = [
+      '請依照以下原始資料，為每一家社團各整理一封「只包含該社自己相關事項」的 LINE 通知：',
+      '1. 每封信第一行寫「社號 社名」，例如「2408 羅娜」；',
+      '2. 內容只描述該社的待辦事項與繳費/補件情況，不要提到其他社的資訊；',
+      '3. 原始資料中對該社的特別備註（如缺名冊紙本）必須寫進去；',
+      '4. 只輸出 JSON 陣列，格式：[{"club_id":"2408","club_name":"羅娜","message":"..."}]',
+      '5. 社號只能使用原始資料中出現的數字，不可自行增刪。',
+      '',
+      '原始資料：',
+      String(rawData || ''),
+      note
+    ].join('\n');
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const text = await callGemini(system, prompt + (attempt > 0 ? '\n\n再次提醒：只輸出 JSON 陣列，不要加入任何其他說明文字。' : ''), { maxOutputTokens: 3000 });
+      if (!text) return null;
+      const items = parseClubAnnouncements(text, rawData);
+      if (items) return items;
+    }
+    return null;
+  }
+
+  const prompt = [
+    '請將以下原始資料整理成「LINE 群組公告簡訊版」，可直接複製貼到 LINE 群組：',
+    '1. 以「📢 【重要通知】」開頭，標題說明事由；',
+    '2. 條列列出各社社號/社名及相關事項/日期（例如「2408 羅娜（名冊已交 7/28）」）；',
+    '3. 若資料中有某社的特別備註（如缺名冊紙本），在名單後以「特別注意」欄位單獨提醒；',
+    '4. 結尾附上 1-2 行溫馨提醒與聯絡說明；',
+    '5. 純文字、繁體中文、不分頁籤符號，標點符號清晰。',
+    '',
+    '原始資料：',
+    String(rawData || ''),
+    note
+  ].join('\n');
+  return callGemini(system, prompt, { maxOutputTokens: 1500 });
 }
 
 // ===== 來源名稱補抓（管理後台按鈕觸發，避免每則訊息呼叫 LINE API） =====
@@ -237,6 +342,32 @@ async function handleLineEvent(event) {
   if (!text) return;
 
   const lower = text.toLowerCase();
+
+  // AI 公告草稿產生：僅限區會主群組，只回覆草稿、不自動推播
+  if (lower.startsWith('公告：') || lower.startsWith('公告:')) {
+    const groupRow = await getOne("SELECT value FROM settings WHERE key = 'line_group_id'");
+    const mainGroupId = groupRow && groupRow.value;
+    const isMainGroup = event.source && event.source.type === 'group' && String(event.source.groupId) === String(mainGroupId);
+    if (!isMainGroup) {
+      await replyMessage(event.replyToken, '公告產生功能僅限區會主群組使用。');
+      return;
+    }
+    const idx = text.search(/[：:]/);
+    const raw = text.slice(idx + 1).trim();
+    if (raw.length < 10) {
+      await replyMessage(event.replyToken, '請在「公告：」後附上原始資料，例如：公告：2408 羅娜 115/7/28，2419 久美（缺名冊紙本），請轉知各社盡速繳費');
+      return;
+    }
+    await replyMessage(event.replyToken, '收到，正在產生公告草稿，請稍候...');
+    const draft = await generateAnnouncement(raw, '', 'group');
+    if (!draft) {
+      await replyMessage(event.replyToken, '公告草稿產生失敗（AI 尚未設定或資料無法辨識），請至管理後台「AI 公告」操作。');
+      return;
+    }
+    await replyMessage(event.replyToken, `📢 群組公告草稿（此為草稿，正式推播請至管理後台「AI 公告」確認後再送）：\n\n${draft}`.slice(0, 4800));
+    return;
+  }
+
   if (FEEDBACK_KEYWORDS.some(k => lower.includes(k))) {
     const id = await saveFeedback(null, 'LINE 群組', guessCategory(text), text);
     await replyMessage(event.replyToken, `已收到您的意見（編號 #${id}），已記錄並轉交開發團隊處理，感謝您的回饋！`);
@@ -247,4 +378,4 @@ async function handleLineEvent(event) {
   await replyMessage(event.replyToken, answer || 'AI 助理尚未設定完成，請直接聯絡督導或區會幹事。');
 }
 
-module.exports = { verifySignature, handleLineEvent, pushToGroup, pushToUser, pushToLineUser, refreshSourceNames, summarizeMessages };
+module.exports = { verifySignature, handleLineEvent, pushToGroup, pushToUser, pushToLineUser, refreshSourceNames, summarizeMessages, generateAnnouncement, getGroundingUsage, canUseGrounding, recordGroundingUse };
