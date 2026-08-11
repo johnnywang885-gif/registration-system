@@ -78,6 +78,13 @@
 
       <!-- 社團管理 -->
       <div class="tab-content" id="tab-clubs">
+        <div id="adminAccountsSection">
+          <h3 style="font-size:15px; color:#4a3728; margin-bottom:8px;">管理者帳號與權限</h3>
+          <p style="font-size:13px; color:#666; margin-bottom:12px;">系統管理員擁有全部功能；次管理者僅能使用下方勾選的功能。權限變更後，次管理者需重新登入才生效。</p>
+          <button class="btn btn-primary btn-sm" onclick="showAddSubAdmin()">新增次管理者</button>
+          <div id="adminTable" style="margin-top:12px;"></div>
+          <hr style="margin: 26px 0; border: 1px solid #e0e0e0;">
+        </div>
         <div class="btn-group mb-20">
           <button class="btn btn-primary" onclick="showAddClub()">新增社團</button>
           <button class="btn btn-success" onclick="importClubsFromExcel()">從 Excel 匯入</button>
@@ -291,6 +298,36 @@
 
     const isAdmin = localStorage.getItem('isAdmin') === 'true';
     if (!isAdmin) { window.location.href = '/register'; }
+
+    // 後台功能權限：系統管理員（或舊版未存權限的登入）＝全部功能；次管理者＝ adminPerms 清單
+    const storedPerms = localStorage.getItem('adminPerms');
+    const adminPerms = storedPerms ? (() => { try { return JSON.parse(storedPerms); } catch { return []; } })() : [];
+    const isSuperAdmin = localStorage.getItem('isSuperAdmin') === 'true' || storedPerms === null;
+
+    const ADMIN_TAB_OPTIONS = [
+      { key: 'registrations', label: '報名管理' },
+      { key: 'payments', label: '繳費審核' },
+      { key: 'clubs', label: '社團管理' },
+      { key: 'settings', label: '系統設定' },
+      { key: 'standby', label: '遞補順序' },
+      { key: 'feedback', label: '意見回饋' },
+      { key: 'linedigest', label: 'LINE 彙整' },
+      { key: 'announce', label: 'AI 公告' }
+    ];
+
+    // 次管理者：隱藏未開放權限的頁籤
+    if (!isSuperAdmin) {
+      document.querySelectorAll('.tab').forEach(tab => {
+        if (!adminPerms.includes(tab.dataset.tab)) tab.style.display = 'none';
+      });
+      const firstVisible = [...document.querySelectorAll('.tab')].find(t => t.style.display !== 'none');
+      if (firstVisible && !firstVisible.classList.contains('active')) {
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+        firstVisible.classList.add('active');
+        document.getElementById(`tab-${firstVisible.dataset.tab}`).classList.add('active');
+      }
+    }
 
     // Tab switching
     document.querySelectorAll('.tab').forEach(tab => {
@@ -568,14 +605,48 @@
         const data = await res.json();
         clubsList = data;
 
-        // Populate filter dropdown
+        // Populate filter dropdown (regular clubs only)
         const filterClub = document.getElementById('filterClub');
         const currentVal = filterClub.value;
         filterClub.innerHTML = '<option value="">全部</option>';
-        data.filter(c => !c.is_admin).forEach(c => {
+        data.filter(c => !c.is_admin && !c.admin_perms).forEach(c => {
           filterClub.innerHTML += `<option value="${c.club_id}">${c.club_id} ${c.club_name}</option>`;
         });
         filterClub.value = currentVal;
+
+        // 管理者帳號與權限（次管理者帳號、權限勾選）
+        const admins = data.filter(c => c.is_admin === 1 || c.admin_perms);
+        document.getElementById('adminTable').innerHTML = `
+          <table>
+            <thead>
+              <tr><th>帳號</th><th>姓名</th><th>身分</th><th>開放權限</th><th>操作</th></tr>
+            </thead>
+            <tbody>
+              ${admins.map(c => {
+                const isSuper = c.is_admin === 1;
+                const perms = (() => { try { return JSON.parse(c.admin_perms || '[]'); } catch { return []; } })();
+                return `
+                  <tr>
+                    <td>${c.club_id}</td>
+                    <td>${esc(c.club_name)}</td>
+                    <td>${isSuper ? '系統管理員' : '次管理者'}</td>
+                    <td>${isSuper ? '全部功能' : ADMIN_TAB_OPTIONS.map(t =>
+                      `<label style="display:inline-block; margin-right:12px; white-space:nowrap;">
+                        <input type="checkbox" class="permCb" data-admin-id="${c.club_id}" data-perm="${t.key}"
+                          ${perms.includes(t.key) ? 'checked' : ''} onchange="updateSubAdminPerms(${c.club_id})"> ${t.label}
+                      </label>`
+                    ).join('')}</td>
+                    <td>${isSuper ? '-' : `
+                      <div class="btn-group">
+                        <button class="btn btn-sm btn-secondary" onclick="resetSubAdminPwd(${c.club_id})">重設密碼</button>
+                        <button class="btn btn-sm btn-danger" onclick="deleteSubAdmin(${c.club_id})">刪除</button>
+                      </div>
+                    `}</td>
+                  </tr>`;
+              }).join('')}
+            </tbody>
+          </table>
+        `;
 
         const table = document.getElementById('clubTable');
         table.innerHTML = `
@@ -584,7 +655,7 @@
               <tr><th>社號</th><th>社名</th><th>身分</th><th>操作</th></tr>
             </thead>
             <tbody>
-              ${data.map(c => `
+              ${data.filter(c => !c.is_admin && !c.admin_perms).map(c => `
                 <tr>
                   <td>${c.club_id}</td>
                   <td>${esc(c.club_name)}</td>
@@ -607,6 +678,107 @@
         toast('載入失敗', 'error');
       } finally {
         document.getElementById('loadingClub').classList.add('hidden');
+      }
+    }
+
+    // === 次管理者 ===
+    function showAddSubAdmin() {
+      document.getElementById('modalTitle').textContent = '新增次管理者';
+      document.getElementById('modalContent').innerHTML = `
+        <div class="form-group">
+          <label>帳號（社號，不可與既有帳號重複）</label>
+          <input type="number" id="newSubAdminId" placeholder="如 9001">
+        </div>
+        <div class="form-group">
+          <label>姓名</label>
+          <input type="text" id="newSubAdminName" placeholder="如 王小明">
+        </div>
+        <div class="form-group">
+          <label>密碼（選填，預設為帳號後四碼）</label>
+          <input type="text" id="newSubAdminPwd" placeholder="預設為帳號後四碼">
+        </div>
+        <div class="form-group">
+          <label>開放權限</label>
+          ${ADMIN_TAB_OPTIONS.map(t =>
+            `<label style="display:block; margin:6px 0;">
+              <input type="checkbox" class="addSubPermCb" data-perm="${t.key}"
+                ${t.key === 'registrations' || t.key === 'payments' ? 'checked' : ''}> ${t.label}
+            </label>`
+          ).join('')}
+        </div>
+      `;
+      document.getElementById('modalConfirm').onclick = addSubAdmin;
+      document.getElementById('modal').classList.remove('hidden');
+    }
+
+    async function addSubAdmin() {
+      const id = document.getElementById('newSubAdminId').value;
+      const name = document.getElementById('newSubAdminName').value;
+      const pwd = document.getElementById('newSubAdminPwd').value;
+      if (!id || !name) { toast('請填寫帳號和姓名', 'error'); return; }
+      const perms = [];
+      document.querySelectorAll('.addSubPermCb:checked').forEach(b => perms.push(b.dataset.perm));
+      if (perms.length === 0) { toast('請至少勾選一項開放權限', 'error'); return; }
+      try {
+        const res = await fetch('/api/admin/admins', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify({ club_id: parseInt(id), club_name: name, password: pwd || undefined, perms })
+        });
+        const data = await res.json();
+        toast(data.message || data.error, res.ok ? 'success' : 'error');
+        closeModal();
+        if (res.ok) loadClubs();
+      } catch (err) {
+        toast('新增失敗', 'error');
+      }
+    }
+
+    async function updateSubAdminPerms(id) {
+      const perms = [];
+      document.querySelectorAll(`.permCb[data-admin-id="${id}"]`).forEach(b => {
+        if (b.checked) perms.push(b.dataset.perm);
+      });
+      try {
+        const res = await fetch(`/api/admin/admins/${id}/perms`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify({ perms })
+        });
+        const data = await res.json();
+        toast(data.message || data.error || '已更新', res.ok ? 'success' : 'error');
+        if (res.ok) loadClubs();
+      } catch (err) {
+        toast('更新失敗', 'error');
+      }
+    }
+
+    async function resetSubAdminPwd(id) {
+      if (!confirm(`確定要重設帳號 ${id} 的密碼為預設值？`)) return;
+      try {
+        const res = await fetch(`/api/admin/clubs/${id}/reset-password`, {
+          method: 'PUT',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        const data = await res.json();
+        toast(data.message || data.error || '已重設', res.ok ? 'success' : 'error');
+      } catch (err) {
+        toast('重設失敗', 'error');
+      }
+    }
+
+    async function deleteSubAdmin(id) {
+      if (!confirm(`確定要刪除次管理者帳號 ${id}？此操作無法復原。`)) return;
+      try {
+        const res = await fetch(`/api/admin/admins/${id}`, {
+          method: 'DELETE',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        const data = await res.json();
+        toast(data.message || data.error, res.ok ? 'success' : 'error');
+        if (res.ok) loadClubs();
+      } catch (err) {
+        toast('刪除失敗', 'error');
       }
     }
 
@@ -1364,9 +1536,9 @@
 
     // Init
     loadClubs();
-    loadRegistrations();
-    loadPayments();
-    loadSettings();
+    if (isSuperAdmin || adminPerms.includes('registrations')) loadRegistrations();
+    if (isSuperAdmin || adminPerms.includes('payments')) loadPayments();
+    if (isSuperAdmin || adminPerms.includes('settings')) loadSettings();
   </script>
 </body>
 </html>

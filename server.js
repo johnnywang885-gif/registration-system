@@ -8,7 +8,7 @@ const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const XLSX = require('xlsx');
 const { initDatabase, getAll, getOne, runQuery, insert, importClubs, saveDatabase, getDb } = require('./database');
-const { generateToken, authMiddleware, adminMiddleware } = require('./auth');
+const { generateToken, authMiddleware, anyAdminMiddleware, adminMiddleware, requirePerm, getAdminPerms, ADMIN_PERMS } = require('./auth');
 const { taipeiToday, phaseState, getSettings, occupancy, promoteStandby, forfeitUnpaidByPhase, runEnforcement, enforceDeadlines } = require('./deadlines');
 const { verifySignature, handleLineEvent, pushToGroup, pushToUser, pushToLineUser, refreshSourceNames, summarizeMessages, generateAnnouncement } = require('./linebot');
 
@@ -131,12 +131,15 @@ function startServer() {
         return res.status(401).json({ error: '密碼錯誤' });
       }
 
+      const perms = getAdminPerms(club);
       const token = generateToken(club);
       res.json({
         token,
         clubId: club.club_id,
         clubName: club.club_name,
-        isAdmin: club.is_admin === 1
+        isAdmin: perms.length > 0,
+        isSuperAdmin: club.is_admin === 1,
+        adminPerms: perms
       });
     } catch (err) {
       console.error('Login error:', err.message);
@@ -146,9 +149,9 @@ function startServer() {
 
   app.get('/api/me', authMiddleware, async (req, res) => {
     try {
-      const club = await getOne("SELECT club_id, club_name, is_admin FROM clubs WHERE club_id = ?", [req.user.clubId]);
+      const club = await getOne("SELECT club_id, club_name, is_admin, admin_perms FROM clubs WHERE club_id = ?", [req.user.clubId]);
       if (!club) return res.status(404).json({ error: '社團不存在' });
-      res.json(club);
+      res.json({ ...club, adminPerms: getAdminPerms(club) });
     } catch (err) {
       console.error('Me error:', err.message);
       res.status(500).json({ error: '資料庫尚未就緒，請稍後再試' });
@@ -390,7 +393,7 @@ function startServer() {
   });
 
   // ===== Admin API =====
-  app.get('/api/admin/all', authMiddleware, adminMiddleware, async (req, res) => {
+  app.get('/api/admin/all', authMiddleware, requirePerm('registrations'), async (req, res) => {
     const { club_id, phase, status } = req.query;
     let sql = `
       SELECT r.*, c.club_name
@@ -409,7 +412,7 @@ function startServer() {
     res.json(registrations);
   });
 
-  app.put('/api/admin/payment/:id', authMiddleware, adminMiddleware, async (req, res) => {
+  app.put('/api/admin/payment/:id', authMiddleware, requirePerm('registrations'), async (req, res) => {
     try {
       await runQuery("UPDATE registrations SET status = 'paid' WHERE id = ?", [req.params.id]);
       res.json({ message: '已標記為已繳費' });
@@ -419,7 +422,7 @@ function startServer() {
     }
   });
 
-  app.put('/api/admin/forfeit/:id', authMiddleware, adminMiddleware, async (req, res) => {
+  app.put('/api/admin/forfeit/:id', authMiddleware, requirePerm('registrations'), async (req, res) => {
     try {
       await runQuery("UPDATE registrations SET status = 'forfeited' WHERE id = ?", [req.params.id]);
       res.json({ message: '已標記為棄權' });
@@ -429,7 +432,7 @@ function startServer() {
     }
   });
 
-  app.put('/api/admin/reset-status/:id', authMiddleware, adminMiddleware, async (req, res) => {
+  app.put('/api/admin/reset-status/:id', authMiddleware, requirePerm('registrations'), async (req, res) => {
     try {
       await runQuery("UPDATE registrations SET status = 'registered' WHERE id = ?", [req.params.id]);
       res.json({ message: '已重設狀態' });
@@ -439,14 +442,15 @@ function startServer() {
     }
   });
 
-  app.put('/api/admin/change-password', authMiddleware, adminMiddleware, async (req, res) => {
+  app.put('/api/admin/change-password', authMiddleware, anyAdminMiddleware, async (req, res) => {
     try {
       const { currentPassword, newPassword } = req.body;
       if (!currentPassword || !newPassword) return res.status(400).json({ error: '請輸入目前密碼與新密碼' });
       if (String(newPassword).length < 8) return res.status(400).json({ error: '新密碼至少 8 碼' });
 
       const admin = await getOne("SELECT * FROM clubs WHERE club_id = ?", [req.user.clubId]);
-      if (!admin || admin.is_admin !== 1) return res.status(403).json({ error: '無管理者權限' });
+      const isAdminUser = admin && (admin.is_admin === 1 || (admin.admin_perms && admin.admin_perms.length > 0));
+      if (!admin || !isAdminUser) return res.status(403).json({ error: '無管理者權限' });
 
       if (!bcrypt.compareSync(String(currentPassword), admin.password)) {
         return res.status(400).json({ error: '目前密碼錯誤' });
@@ -520,7 +524,7 @@ function startServer() {
   });
 
   // Payment proof review
-  app.get('/api/payment/all', authMiddleware, adminMiddleware, async (req, res) => {
+  app.get('/api/payment/all', authMiddleware, requirePerm('payments'), async (req, res) => {
     const proofs = await getAll(`
       SELECT p.*, c.club_name
       FROM payment_proofs p
@@ -530,7 +534,7 @@ function startServer() {
     res.json(proofs);
   });
 
-  app.put('/api/payment/review/:id', authMiddleware, adminMiddleware, async (req, res) => {
+  app.put('/api/payment/review/:id', authMiddleware, requirePerm('payments'), async (req, res) => {
     const { action } = req.body;
     const newStatus = action === 'approve' ? 'approved' : 'rejected';
     await runQuery(
@@ -552,7 +556,7 @@ function startServer() {
     res.json({ message: action === 'approve' ? '已確認繳費' : '已駁回' });
   });
 
-  app.put('/api/payment/reset/:id', authMiddleware, adminMiddleware, async (req, res) => {
+  app.put('/api/payment/reset/:id', authMiddleware, requirePerm('payments'), async (req, res) => {
     const proof = await getOne("SELECT * FROM payment_proofs WHERE id = ?", [req.params.id]);
     if (!proof) return res.status(404).json({ error: '繳費證明不存在' });
 
@@ -570,8 +574,13 @@ function startServer() {
   });
 
   // Club management
-  app.get('/api/admin/clubs', authMiddleware, adminMiddleware, async (req, res) => {
-    const clubs = await getAll("SELECT club_id, club_name, is_admin FROM clubs ORDER BY club_id");
+  app.get('/api/admin/clubs', authMiddleware, anyAdminMiddleware, async (req, res) => {
+    let clubs = await getAll("SELECT club_id, club_name, is_admin, admin_perms FROM clubs ORDER BY club_id");
+    // 次管理者不需看到 admin_perms（權限僅由系統管理員管理）
+    const isSuper = req.user.superAdmin === true || !Array.isArray(req.user.perms);
+    if (!isSuper) {
+      clubs = clubs.map(c => ({ club_id: c.club_id, club_name: c.club_name, is_admin: c.is_admin }));
+    }
     res.json(clubs);
   });
 
@@ -604,6 +613,44 @@ function startServer() {
     const hash = bcrypt.hashSync(defaultPwd, 10);
     await runQuery("UPDATE clubs SET password = ? WHERE club_id = ?", [hash, parseInt(req.params.id)]);
     res.json({ message: '密碼已重設' });
+  });
+
+  // 次管理者（限定功能權限的管理帳號）管理
+  app.post('/api/admin/admins', authMiddleware, adminMiddleware, async (req, res) => {
+    const { club_id, club_name, password, perms } = req.body;
+    if (!club_id || !club_name) return res.status(400).json({ error: '請輸入帳號和姓名' });
+    const id = parseInt(club_id);
+    if (isNaN(id) || id <= 0) return res.status(400).json({ error: '帳號格式不正確' });
+    const exists = await getOne("SELECT club_id FROM clubs WHERE club_id = ?", [id]);
+    if (exists) return res.status(400).json({ error: `帳號 ${id} 已存在` });
+
+    const validPerms = Array.isArray(perms) ? perms.filter(p => ADMIN_PERMS.includes(p)) : [];
+    if (validPerms.length === 0) return res.status(400).json({ error: '請至少勾選一項開放權限' });
+
+    const defaultPwd = password || String(id).slice(-4);
+    const hash = bcrypt.hashSync(defaultPwd, 10);
+    await insert("INSERT INTO clubs (club_id, club_name, password, is_admin, admin_perms) VALUES (?, ?, ?, 0, ?)",
+      [id, club_name, hash, JSON.stringify(validPerms)]);
+    res.json({ message: '次管理者已建立' });
+  });
+
+  app.put('/api/admin/admins/:id/perms', authMiddleware, adminMiddleware, async (req, res) => {
+    const { perms } = req.body;
+    if (!Array.isArray(perms)) return res.status(400).json({ error: '權限格式不正確' });
+    const validPerms = perms.filter(p => ADMIN_PERMS.includes(p));
+    const target = await getOne("SELECT club_id FROM clubs WHERE club_id = ? AND is_admin = 0 AND admin_perms IS NOT NULL AND admin_perms != ''",
+      [parseInt(req.params.id)]);
+    if (!target) return res.status(404).json({ error: '找不到該次管理者' });
+    await runQuery("UPDATE clubs SET admin_perms = ? WHERE club_id = ?", [JSON.stringify(validPerms), target.club_id]);
+    res.json({ message: '權限已更新，次管理者重新登入後生效' });
+  });
+
+  app.delete('/api/admin/admins/:id', authMiddleware, adminMiddleware, async (req, res) => {
+    const target = await getOne("SELECT club_id FROM clubs WHERE club_id = ? AND is_admin = 0 AND admin_perms IS NOT NULL AND admin_perms != ''",
+      [parseInt(req.params.id)]);
+    if (!target) return res.status(404).json({ error: '找不到該次管理者' });
+    await runQuery("DELETE FROM clubs WHERE club_id = ?", [target.club_id]);
+    res.json({ message: '次管理者已刪除' });
   });
 
   app.post('/api/admin/import-clubs', authMiddleware, adminMiddleware, async (req, res) => {
@@ -727,8 +774,8 @@ function startServer() {
 
       // Restore clubs
       const clubStmts = backup.clubs.map(c => ({
-        sql: "INSERT OR REPLACE INTO clubs (club_id, club_name, password, is_admin) VALUES (?, ?, ?, ?)",
-        args: [c.club_id, c.club_name, c.password, c.is_admin || 0]
+        sql: "INSERT OR REPLACE INTO clubs (club_id, club_name, password, is_admin, admin_perms) VALUES (?, ?, ?, ?, ?)",
+        args: [c.club_id, c.club_name, c.password, c.is_admin || 0, c.admin_perms || '']
       }));
       if (clubStmts.length > 0) await dbConn.batch(clubStmts, 'write');
 
@@ -805,7 +852,7 @@ function startServer() {
   });
 
   // Export Excel
-  app.get('/api/admin/export', authMiddleware, adminMiddleware, async (req, res) => {
+  app.get('/api/admin/export', authMiddleware, requirePerm('registrations'), async (req, res) => {
     const { club_id, phase, status } = req.query;
     let sql = `
       SELECT r.*, c.club_name

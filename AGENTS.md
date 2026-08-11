@@ -32,7 +32,7 @@ No lint, typecheck, or test scripts exist. This is a plain JS project with no bu
 - `sim_phase2_144_30.js` — boots real server on PORT 34893; scenario simulation (Phase 1: 144 paid + paid-club standby; Phase 2: 30 incl. those standby) printing per-club tables. Reuse as a template for "what if" simulations.
 - `sim_185_30.js` — boots real server on PORT 34904; scenario simulation (185 Phase-1 registrations incl. 5 big clubs over the 10-seat guarantee → 50 unpaid forfeits → 30 Phase-2 registrations) and keeps the DB alive for browser verification. Reuse as template too.
 - `sim_frontend_boot.js` — boots real server on PORT 34900, seeds clubs 2401/2402, then stays alive (`setInterval`) for manual/browser frontend testing. **Use this instead of `npm start` when you need a running server for MCP browser work.**
-- Run **one at a time, sequentially** — each boots its own server on a distinct port against a throwaway `file:` DB in `test/*.db` (gitignored). Pass = output ends with `PASS` / `全部階段 PASS`.
+- Run **one at a time, sequentially** — each boots its own server on a distinct port against a throwaway `file:` DB in `test/*.db` (gitignored). Pass = output ends with `PASS` / `全部階段 PASS`; exception: `review_a_flap.js`/`review_c_backup.js` print no PASS marker — they pass when the process exits 0 (assertions throw on failure).
 - `phase2_standby.js` / `simulate.js` are stale one-off scripts still driven by the ignored `current_phase` setting — ignore them.
 
 ### MCP browser testing (chrome-devtools-mcp)
@@ -67,6 +67,7 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 - `db.batch()` for multi-statement operations (table creation, bulk inserts)
 - `saveDatabase()` is a no-op (kept for backward compat)
 - Tables: `clubs`, `registrations`, `payment_proofs`, `settings`, `feedback`, `line_messages`, `line_sources`
+- `clubs` — 社團帳號（`is_admin=1` 系統管理員；`admin_perms` 非空＝次管理者，JSON 權限陣列）
 - `line_messages` — LINE 對話紀錄（`source_type` group/user、`source_id` groupId|userId、`sender_id`、`message`、`created_at`，UTC datetime）；bot 收到每則文字訊息即 INSERT
 - `line_sources` — LINE 來源清單（PK `(source_type, source_id)`），每個 LINE 事件即時 `ON CONFLICT ... DO UPDATE` 更新 `last_message_at`（upsert 不可用 `INSERT OR REPLACE`，會清掉名稱欄位）；`source_name`/`member_count` 由管理員在後台按「重新整理名稱」補抓（群組→`GET /v2/bot/group/{id}/summary`、用戶→`GET /v2/bot/profile/{id}`），失敗保留原值
 - 兩表皆納入 backup/restore JSON（`line_messages`/`line_sources` 節）
@@ -103,9 +104,16 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 - `POST /api/admin/promote` (manual button) and `POST /api/admin/promote/:id` remain as backup; both respect the 160 cap. `POST /api/admin/promote` promotes Phase 1 standby of ANY club.
 - `GET /api/admin/settings` returns `derived_phase`, `today`, `occupancy`, `remaining` for the admin UI (which shows the phase read-only).
 
-### Auth (`auth.js`)
-- JWT middleware: `authMiddleware` for protected routes, `adminMiddleware` for admin-only
+### Auth & Admin Roles (`auth.js`)
+- JWT middleware: `authMiddleware` for protected routes, `anyAdminMiddleware`（任何管理者）, `adminMiddleware`（僅系統管理員）, `requirePerm('功能key')`（功能權限）
 - Tokens expire in 24h. Frontend stores in `localStorage`
+- **兩種管理者**：系統管理員（`clubs.is_admin=1`，全部功能）與**次管理者**（`is_admin=0` + `clubs.admin_perms` 欄位存 JSON 權限陣列，如 `["registrations","payments"]`；`admin_perms` 非空即代表次管理者帳號，`is_admin=1` 時視為系統管理員）
+- 權限 key（對應後台各頁籤）：`registrations`(報名管理) / `payments`(繳費審核) / `clubs`(社團管理) / `settings`(系統設定) / `standby`(遞補順序) / `feedback`(意見回饋) / `linedigest`(LINE 彙整) / `announce`(AI 公告)；定義在 `auth.js` `ADMIN_PERMS`，前端 `admin.html` `ADMIN_TAB_OPTIONS` 需同步
+- Token payload：`isAdmin`（任何管理者為 true）、`superAdmin`（僅系統管理員）、`perms`（權限陣列，僅管理帳號帶）；**舊版 token（無 `perms` 欄位）視為系統管理員**，部署後舊登入 24h 內仍有效
+- 權限 gating：報名管理 tab（`/api/admin/all`、`/api/admin/payment/:id`、`forfeit/:id`、`reset-status/:id`、`/api/admin/export`）→ `requirePerm('registrations')`；繳費審核 tab（`/api/payment/all`、`review/:id`、`reset/:id`）→ `requirePerm('payments')`；其餘後台路由維持 `adminMiddleware`（僅系統管理員）；`/api/admin/change-password` 用 `anyAdminMiddleware`（次管理者可改自己密碼）
+- 次管理者管理（系統管理員專用）：`POST /api/admin/admins`（建立，`perms` 白名單過濾、帳號不可重複）、`PUT /api/admin/admins/:id/perms`（勾選權限，重新登入後生效）、`DELETE /api/admin/admins/:id`；重設密碼可走既有 `/api/admin/clubs/:id/reset-password`（預設＝帳號後四碼）。`GET /api/admin/clubs` 對次管理者隱藏 `admin_perms`（靠 `superAdmin` flag 判斷，任何管理者可讀社團清單供報名篩選用）
+- 登入回應含 `isSuperAdmin`、`adminPerms`；`index.html` 存 `localStorage`（`isSuperAdmin`/`adminPerms`），`admin.html` 依權限隱藏未開放頁籤並以勾選框管理權限（社團管理 tab → 管理者帳號與權限）
+- `clubs.admin_perms` 由 `database.js` 啟動 migration（`ALTER TABLE` try/catch）新增；backup/restore 已含此欄位（還原時 `c.admin_perms || ''` 兼容舊備份）
 - Default admin `admin`/`admin123` exists **only in fresh local `file:` DBs** (initialized by `database.js`); the production password was changed at go-live — never assume the default against the live Turso DB. Admins change their own password via `PUT /api/admin/change-password` (系統設定 tab).
 - Club passwords default to last 4 digits of `club_id`
 
@@ -141,7 +149,7 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 
 **Railway API gotcha**: `variableUpsert` mutation MUST include `serviceId` param, otherwise the variable is set at project level but not exposed to the running service. Query `services` to get the service ID first.
 
-**Current live state (2026-08)**: production has `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `LINE_CHANNEL_SECRET`, `LINE_CHANNEL_ACCESS_TOKEN`, `GEMINI_API_KEY` set at service level; `JWT_SECRET` is auto-generated into Turso settings. LINE bot (AI Q&A, feedback, group announce) is fully live and verified; LINE 彙整/轉送（line-sources/digest/send）隨 2026-08-10 部署上線（body-probe 已確認新程式碼生效）。`GEMINI_MODEL`/`GEMINI_GROUNDING` 未在 Railway 設定（用預設模型、不啟用搜尋）。
+**Current live state (2026-08)**: production has `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `LINE_CHANNEL_SECRET`, `LINE_CHANNEL_ACCESS_TOKEN`, `GEMINI_API_KEY` set at service level; `JWT_SECRET` is auto-generated into Turso settings. LINE bot (AI Q&A, feedback, group announce) is fully live and verified; LINE 彙整/轉送（line-sources/digest/send）隨 2026-08-10 部署上線、AI 公告（announce generate/match/send + LINE 關鍵字草稿觸發）隨 2026-08-11 部署上線（body-probe 已確認新程式碼生效）。`GEMINI_MODEL`/`GEMINI_GROUNDING` 未在 Railway 設定（用預設模型、不啟用搜尋）。
 
 ### Railway GraphQL API (account token — works, `railway` CLI doesn't)
 - Endpoint: `https://backboard.railway.com/graphql/v2` (or `backboard.railway.app`), header `Authorization: Bearer <token>`, `Content-Type: application/json`, body `{"query":"..."}`.
@@ -189,7 +197,8 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 - `POST /api/admin/promote` — auto-promote Phase 1 standby to fill quota (admin only)
 - `GET /api/admin/standby-list` — list standby from BOTH phases (admin only)
 - `POST /api/admin/promote/:id` — manual promote single standby, respects 160 cap (admin only)
-- `GET /api/admin/clubs` + `POST/PUT/DELETE /api/admin/clubs` / `PUT /api/admin/clubs/:id/reset-password` — club management CRUD (admin only)
+- `GET /api/admin/clubs` + `POST/PUT/DELETE /api/admin/clubs` / `PUT /api/admin/clubs/:id/reset-password` — club management CRUD (admin only; GET 任何管理者可用，公告篩選用，次管理者看不到 `admin_perms`)
+- `POST /api/admin/admins` / `PUT /api/admin/admins/:id/perms` / `DELETE /api/admin/admins/:id` — 次管理者建立（`perms` 白名單過濾、帳號不可重複、至少一項權限）/ 勾選權限（重新登入生效）/ 刪除（system admin only）
 - `PUT /api/payment/review/:id` — approve/reject payment proof (admin only)
 - `PUT /api/payment/reset/:id` — reset payment proof to pending (admin only)
 - `POST /api/feedback` — submit feedback (auth required; categories 操作問題/錯誤回報/功能建議/其他, max 2000 chars)
@@ -270,7 +279,7 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 
 ### Feedback & LINE Bot
 - `public/feedback.html` (auth required) submits to `feedback` table via `POST /api/feedback`; admin views/marks via 意見回饋 tab (`/api/admin/feedback`).
-- `linebot.js` — LINE Messaging API integration: `verifySignature()` (HMAC-SHA256, needs rawBody captured via `express.json({ verify })`), `handleLineEvent()` (records every text message into `line_messages` + upserts `line_sources`; ANY event with a `groupId` — join or group message — upserts `line_group_id` into settings; join also sends a welcome message; text messages containing 意見/建議/回報/改進/壞掉/希望/bug → saved to `feedback` with a guessed category, else Gemini Q&A (model = `GEMINI_MODEL`, 預設 `gemini-3.5-flash-lite`) — general assistant, registration-system questions answered precisely, optional `googleSearch` grounding behind `GEMINI_GROUNDING` with automatic fallback to ungrounded, gated by a **monthly search counter** (`settings.grounding_YYYY-MM`, cap = `GEMINI_GROUNDING_MAX_MONTH` 預設 4800 — 防觸動付費；`getGroundingUsage()`/`canUseGrounding()`/`recordGroundingUse()`)). `generateAnnouncement()`（AI 公告：群組版＋各社版 JSON 白名單驗證）, `pushToGroup()` (announcements via 系統設定 tab button → `POST /api/admin/line-announce`; 501 when unconfigured), `pushToLineUser()` (arbitrary target push for the LINE 彙整 send flow), `refreshSourceNames()` (enrich `line_sources` names via group summary / profile APIs), `summarizeMessages()` (digest a message list via Gemini — 重點摘要 or 待確認疑問清單).
+- `linebot.js` — LINE Messaging API integration: `verifySignature()` (HMAC-SHA256, needs rawBody captured via `express.json({ verify })`), `handleLineEvent()` (records every text message into `line_messages` + upserts `line_sources`; ANY event with a `groupId` — join or group message — upserts `line_group_id` into settings; join also sends a welcome message; 「公告：<原始資料>」前綴 → `generateAnnouncement()` 產生草稿回覆（**僅限區會主群組 `line_group_id` 觸發，只回草稿不自動推播**）；text messages containing 意見/建議/回報/改進/壞掉/希望/bug → saved to `feedback` with a guessed category, else Gemini Q&A (model = `GEMINI_MODEL`, 預設 `gemini-3.5-flash-lite`) — general assistant, registration-system questions answered precisely, optional `googleSearch` grounding behind `GEMINI_GROUNDING` with automatic fallback to ungrounded, gated by a **monthly search counter** (`settings.grounding_YYYY-MM`, cap = `GEMINI_GROUNDING_MAX_MONTH` 預設 4800 — 防觸動付費；`getGroundingUsage()`/`canUseGrounding()`/`recordGroundingUse()`)). `generateAnnouncement()`（AI 公告：群組版＋各社版 JSON 白名單驗證）, `pushToGroup()` (announcements via 系統設定 tab button → `POST /api/admin/line-announce`; 501 when unconfigured), `pushToLineUser()` (arbitrary target push for the LINE 彙整 send flow), `refreshSourceNames()` (enrich `line_sources` names via group summary / profile APIs), `summarizeMessages()` (digest a message list via Gemini — 重點摘要 or 待確認疑問清單).
 - LINE 群組訊息：現行平台會把群組內**所有**訊息事件送到 bot（無需 @提及；被 @ 時額外帶 `mention.mentionees[].isSelf=true` metadata）。webhook 先 ack 200 再異步處理事件。`feedback` 表含在 backup/restore 中。
 - LINE 彙整與轉送（管理後台「LINE 彙整」tab）：來源＝`line_messages` 去重（群組/個別社 1:1 都收）；管理員選來源＋時間範圍＋彙整類型 →「彙整並直接傳送」一鍵呼叫 `POST /api/admin/line-digest` 產出後 `POST /api/admin/line-send` 推送到指定對象（個別社 push 需要對方已加官方帳號好友，非好友 501）；「僅預覽」只產出不送出。
 - AI 公告（管理後台「AI 公告」tab）：貼入原始資料（社號/社名/日期/事項，如催繳名單）＋選擇性指示 → `generateAnnouncement()`（Gemini）並行產出群組總公告版與各社個別版 → 各社自動比對 `line_sources.source_name`（含社號或社名；群組優先），可編輯內容、逐社或全部傳送、逐筆回報結果。群組總公告在 LINE 主群組發「公告：<原始資料>」給 bot 即可讓 bot 產生草稿回覆（**僅限區會主群組觸發，只回覆草稿不自動推播**，正式推播一律走管理後台）。
@@ -300,7 +309,7 @@ RAILWAY_SWITCH_MEMO.md — Railway Trial→Free 方案切換備忘（2025/8 舊�
 railway.json     — Railway deploy config (Nixpacks builder)
 ```
 
-Repo root also holds **untracked local clutter** (manual `backup_*.json` exports, logo/screenshot files, xlsx) that `.gitignore` does NOT cover — never `git add .`; commit only intended files. One of these root `backup_*.json` files is what `test/review_c_backup.js` expects as its seed source.
+Repo root also holds **untracked local clutter** (manual `backup_*.json` exports, logo/screenshot images, docx/xlsx exports) that `.gitignore` does NOT cover — never `git add .`; commit only intended files. One of these root `backup_*.json` files is what `test/review_c_backup.js` expects as its seed source.
 
 ## License
 MIT License

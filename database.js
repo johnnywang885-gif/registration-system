@@ -80,6 +80,14 @@ async function initDatabase() {
     )`
   ], 'write');
 
+  // Migration: add admin_perms column (次管理者權限 JSON 陣列；NULL = 一般社團)
+  try {
+    await db.execute("ALTER TABLE clubs ADD COLUMN admin_perms TEXT");
+    console.log('Migration: clubs.admin_perms 欄位已新增');
+  } catch (err) {
+    // column already exists — ignore
+  }
+
   // Create default admin if not exists
   const adminCheck = await db.execute("SELECT COUNT(*) as cnt FROM clubs WHERE is_admin = 1");
   const adminCount = adminCheck.rows[0]?.cnt || 0;

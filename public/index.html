@@ -95,6 +95,8 @@
         localStorage.setItem('clubId', data.clubId);
         localStorage.setItem('clubName', data.clubName);
         localStorage.setItem('isAdmin', data.isAdmin);
+        localStorage.setItem('isSuperAdmin', data.isSuperAdmin === true);
+        localStorage.setItem('adminPerms', JSON.stringify(data.adminPerms || []));
 
         window.location.href = data.isAdmin ? '/admin' : '/register';
       } catch (err) {
