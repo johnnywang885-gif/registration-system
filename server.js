@@ -7,7 +7,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const XLSX = require('xlsx');
-const { initDatabase, getAll, getOne, runQuery, insert, importClubs, saveDatabase, getDb } = require('./database');
+const { initDatabase, getAll, getOne, runQuery, insert, importClubs, saveDatabase, getDb, ensureAdminPermsColumn } = require('./database');
 const { generateToken, authMiddleware, anyAdminMiddleware, adminMiddleware, requirePerm, getAdminPerms, ADMIN_PERMS } = require('./auth');
 const { taipeiToday, phaseState, getSettings, occupancy, promoteStandby, forfeitUnpaidByPhase, runEnforcement, enforceDeadlines } = require('./deadlines');
 const { verifySignature, handleLineEvent, pushToGroup, pushToUser, pushToLineUser, refreshSourceNames, summarizeMessages, generateAnnouncement } = require('./linebot');
@@ -176,7 +176,7 @@ function startServer() {
     }
   });
 
-  app.get('/api/admin/feedback', authMiddleware, adminMiddleware, async (req, res) => {
+  app.get('/api/admin/feedback', authMiddleware, requirePerm('feedback'), async (req, res) => {
     try {
       const rows = await getAll(`
         SELECT f.id, f.club_id, f.display_name, f.category, f.message, f.status, f.created_at, c.club_name
@@ -190,7 +190,7 @@ function startServer() {
     }
   });
 
-  app.put('/api/admin/feedback/:id', authMiddleware, adminMiddleware, async (req, res) => {
+  app.put('/api/admin/feedback/:id', authMiddleware, requirePerm('feedback'), async (req, res) => {
     try {
       const id = parseInt(req.params.id);
       if (isNaN(id)) return res.status(400).json({ error: '無效的編號' });
@@ -466,7 +466,7 @@ function startServer() {
   });
 
   // Promotion (standby -> registered)
-  app.post('/api/admin/promote', authMiddleware, adminMiddleware, async (req, res) => {
+  app.post('/api/admin/promote', authMiddleware, requirePerm('settings'), async (req, res) => {
     try {
       const settings = await getSettings();
       const quota = parseInt(settings.phase1_total_quota || '160');
@@ -484,7 +484,7 @@ function startServer() {
     }
   });
 
-  app.get('/api/admin/standby-list', authMiddleware, adminMiddleware, async (req, res) => {
+  app.get('/api/admin/standby-list', authMiddleware, requirePerm('standby'), async (req, res) => {
     try {
       const list = await getAll(`
         SELECT r.id, r.club_id, c.club_name, r.name, r.position, r.phase, r.created_at
@@ -500,7 +500,7 @@ function startServer() {
     }
   });
 
-  app.post('/api/admin/promote/:id', authMiddleware, adminMiddleware, async (req, res) => {
+  app.post('/api/admin/promote/:id', authMiddleware, requirePerm('standby'), async (req, res) => {
     try {
       const reg = await getOne(
         "SELECT * FROM registrations WHERE id = ? AND status = 'standby'",
@@ -584,7 +584,7 @@ function startServer() {
     res.json(clubs);
   });
 
-  app.post('/api/admin/clubs', authMiddleware, adminMiddleware, async (req, res) => {
+  app.post('/api/admin/clubs', authMiddleware, requirePerm('clubs'), async (req, res) => {
     const { club_id, club_name, password } = req.body;
     if (!club_id || !club_name) return res.status(400).json({ error: '請輸入社號和社名' });
 
@@ -596,18 +596,18 @@ function startServer() {
     res.json({ message: '新增成功' });
   });
 
-  app.put('/api/admin/clubs/:id', authMiddleware, adminMiddleware, async (req, res) => {
+  app.put('/api/admin/clubs/:id', authMiddleware, requirePerm('clubs'), async (req, res) => {
     const { club_name } = req.body;
     await runQuery("UPDATE clubs SET club_name = ? WHERE club_id = ? AND is_admin = 0", [club_name, parseInt(req.params.id)]);
     res.json({ message: '更新成功' });
   });
 
-  app.delete('/api/admin/clubs/:id', authMiddleware, adminMiddleware, async (req, res) => {
+  app.delete('/api/admin/clubs/:id', authMiddleware, requirePerm('clubs'), async (req, res) => {
     await runQuery("DELETE FROM clubs WHERE club_id = ? AND is_admin = 0", [parseInt(req.params.id)]);
     res.json({ message: '刪除成功' });
   });
 
-  app.put('/api/admin/clubs/:id/reset-password', authMiddleware, adminMiddleware, async (req, res) => {
+  app.put('/api/admin/clubs/:id/reset-password', authMiddleware, requirePerm('clubs'), async (req, res) => {
     const { password } = req.body;
     const defaultPwd = password || String(req.params.id).slice(-4);
     const hash = bcrypt.hashSync(defaultPwd, 10);
@@ -616,7 +616,12 @@ function startServer() {
   });
 
   // 次管理者（限定功能權限的管理帳號）管理
+  async function ensurePermsColumn() {
+    try { await ensureAdminPermsColumn(); } catch (err) {}
+  }
+
   app.post('/api/admin/admins', authMiddleware, adminMiddleware, async (req, res) => {
+    await ensurePermsColumn();
     const { club_id, club_name, password, perms } = req.body;
     if (!club_id || !club_name) return res.status(400).json({ error: '請輸入帳號和姓名' });
     const id = parseInt(club_id);
@@ -635,6 +640,7 @@ function startServer() {
   });
 
   app.put('/api/admin/admins/:id/perms', authMiddleware, adminMiddleware, async (req, res) => {
+    await ensurePermsColumn();
     const { perms } = req.body;
     if (!Array.isArray(perms)) return res.status(400).json({ error: '權限格式不正確' });
     const validPerms = perms.filter(p => ADMIN_PERMS.includes(p));
@@ -653,7 +659,7 @@ function startServer() {
     res.json({ message: '次管理者已刪除' });
   });
 
-  app.post('/api/admin/import-clubs', authMiddleware, adminMiddleware, async (req, res) => {
+  app.post('/api/admin/import-clubs', authMiddleware, requirePerm('clubs'), async (req, res) => {
     const { clubs } = req.body;
     if (!clubs || !Array.isArray(clubs)) return res.status(400).json({ error: '資料格式錯誤' });
 
@@ -661,7 +667,7 @@ function startServer() {
     res.json({ message: `成功匯入 ${clubs.length} 個社團` });
   });
 
-  app.post('/api/admin/import-excel', authMiddleware, adminMiddleware, upload.single('file'), async (req, res) => {
+  app.post('/api/admin/import-excel', authMiddleware, requirePerm('clubs'), upload.single('file'), async (req, res) => {
     if (!req.file) return res.status(400).json({ error: '請選擇檔案' });
 
     try {
@@ -697,7 +703,7 @@ function startServer() {
   });
 
   // Settings
-  app.get('/api/admin/settings', authMiddleware, adminMiddleware, async (req, res) => {
+  app.get('/api/admin/settings', authMiddleware, requirePerm('settings'), async (req, res) => {
     const settingsRows = await getAll("SELECT key, value FROM settings");
     const settings = {};
     settingsRows.forEach(s => { settings[s.key] = s.value; });
@@ -713,7 +719,7 @@ function startServer() {
     });
   });
 
-  app.put('/api/admin/settings', authMiddleware, adminMiddleware, async (req, res) => {
+  app.put('/api/admin/settings', authMiddleware, requirePerm('settings'), async (req, res) => {
     const settings = req.body;
     const stmts = Object.entries(settings).map(([key, value]) => ({
       sql: "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
@@ -724,7 +730,7 @@ function startServer() {
   });
 
   // Full Backup (JSON)
-  app.get('/api/admin/backup', authMiddleware, adminMiddleware, async (req, res) => {
+  app.get('/api/admin/backup', authMiddleware, requirePerm('settings'), async (req, res) => {
     const clubs = await getAll("SELECT * FROM clubs");
     const registrations = await getAll("SELECT * FROM registrations");
     const paymentProofs = await getAll("SELECT * FROM payment_proofs");
@@ -752,7 +758,7 @@ function startServer() {
   });
 
   // Full Restore (JSON)
-  app.post('/api/admin/restore', authMiddleware, adminMiddleware, async (req, res) => {
+  app.post('/api/admin/restore', authMiddleware, requirePerm('settings'), async (req, res) => {
     const backup = req.body;
     if (!backup || !backup.clubs || !backup.registrations) {
       return res.status(400).json({ error: '備份檔案格式不正確' });
@@ -838,7 +844,7 @@ function startServer() {
   });
 
   // Clear Registration Data (keep clubs & settings)
-  app.post('/api/admin/clear-data', authMiddleware, adminMiddleware, async (req, res) => {
+  app.post('/api/admin/clear-data', authMiddleware, requirePerm('settings'), async (req, res) => {
     try {
       const dbConn = getDb();
       await dbConn.batch([
@@ -935,7 +941,7 @@ function startServer() {
     }
   });
 
-  app.post('/api/admin/line-announce', authMiddleware, adminMiddleware, async (req, res) => {
+  app.post('/api/admin/line-announce', authMiddleware, requirePerm('settings'), async (req, res) => {
     try {
       const message = req.body && req.body.message ? String(req.body.message).trim() : '';
       if (!message) return res.status(400).json({ error: '請輸入公告內容' });
@@ -948,7 +954,7 @@ function startServer() {
   });
 
   // ===== LINE 對話彙整與轉送 =====
-  app.get('/api/admin/line-sources', authMiddleware, adminMiddleware, async (req, res) => {
+  app.get('/api/admin/line-sources', authMiddleware, requirePerm('linedigest'), async (req, res) => {
     try {
       const sources = await getAll(`
         SELECT s.source_type, s.source_id, s.source_name, s.member_count, s.last_message_at,
@@ -964,7 +970,7 @@ function startServer() {
     }
   });
 
-  app.post('/api/admin/line-sources/refresh', authMiddleware, adminMiddleware, async (req, res) => {
+  app.post('/api/admin/line-sources/refresh', authMiddleware, requirePerm('linedigest'), async (req, res) => {
     try {
       const updated = await refreshSourceNames();
       res.json({ message: `已更新 ${updated} 個來源名稱`, updated });
@@ -973,7 +979,7 @@ function startServer() {
     }
   });
 
-  app.post('/api/admin/line-digest', authMiddleware, adminMiddleware, async (req, res) => {
+  app.post('/api/admin/line-digest', authMiddleware, requirePerm('linedigest'), async (req, res) => {
     try {
       const { source_type, source_id, since, until, kind } = req.body || {};
       if (!source_type || !source_id) return res.status(400).json({ error: '請選擇彙整來源' });
@@ -998,7 +1004,7 @@ function startServer() {
     }
   });
 
-  app.post('/api/admin/line-send', authMiddleware, adminMiddleware, async (req, res) => {
+  app.post('/api/admin/line-send', authMiddleware, requirePerm('linedigest'), async (req, res) => {
     try {
       const { target_type, target_id, text } = req.body || {};
       const message = text ? String(text).trim() : '';
@@ -1015,7 +1021,7 @@ function startServer() {
   });
 
   // ===== AI 公告產生與轉發 =====
-  app.post('/api/admin/announce/generate', authMiddleware, adminMiddleware, async (req, res) => {
+  app.post('/api/admin/announce/generate', authMiddleware, requirePerm('announce'), async (req, res) => {
     try {
       const raw = req.body && req.body.raw ? String(req.body.raw).trim() : '';
       const instructions = req.body && req.body.instructions ? String(req.body.instructions).trim() : '';
@@ -1034,7 +1040,7 @@ function startServer() {
     }
   });
 
-  app.post('/api/admin/announce/match', authMiddleware, adminMiddleware, async (req, res) => {
+  app.post('/api/admin/announce/match', authMiddleware, requirePerm('announce'), async (req, res) => {
     try {
       const clubs = Array.isArray(req.body && req.body.clubs) ? req.body.clubs : [];
       if (clubs.length === 0) return res.status(400).json({ error: '沒有要比對的社團' });
@@ -1063,7 +1069,7 @@ function startServer() {
     }
   });
 
-  app.post('/api/admin/announce/send', authMiddleware, adminMiddleware, async (req, res) => {
+  app.post('/api/admin/announce/send', authMiddleware, requirePerm('announce'), async (req, res) => {
     try {
       const { mode, text, items } = req.body || {};
       if (mode === 'group') {

@@ -81,12 +81,7 @@ async function initDatabase() {
   ], 'write');
 
   // Migration: add admin_perms column (次管理者權限 JSON 陣列；NULL = 一般社團)
-  try {
-    await db.execute("ALTER TABLE clubs ADD COLUMN admin_perms TEXT");
-    console.log('Migration: clubs.admin_perms 欄位已新增');
-  } catch (err) {
-    // column already exists — ignore
-  }
+  await ensureAdminPermsColumn();
 
   // Create default admin if not exists
   const adminCheck = await db.execute("SELECT COUNT(*) as cnt FROM clubs WHERE is_admin = 1");
@@ -149,6 +144,17 @@ async function insert(sql, params = []) {
   return Number(result.lastInsertRowid);
 }
 
+// 冪等確認 admin_perms 欄位存在（啟動 migration ＋ 寫入前保險）
+async function ensureAdminPermsColumn() {
+  if (!db) throw new Error('Database not connected');
+  try {
+    await db.execute("ALTER TABLE clubs ADD COLUMN admin_perms TEXT");
+    console.log('Migration: clubs.admin_perms 欄位已新增');
+  } catch (err) {
+    // column already exists — ignore
+  }
+}
+
 async function importClubs(clubsData) {
   const stmts = clubsData.map(club => {
     const defaultPwd = String(club.club_id).slice(-4);
@@ -173,5 +179,6 @@ module.exports = {
   getAll,
   getOne,
   insert,
-  importClubs
+  importClubs,
+  ensureAdminPermsColumn
 };
