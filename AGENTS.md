@@ -149,7 +149,7 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 
 **Railway API gotcha**: `variableUpsert` mutation MUST include `serviceId` param, otherwise the variable is set at project level but not exposed to the running service. Query `services` to get the service ID first.
 
-**Current live state (2026-08)**: production has `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `LINE_CHANNEL_SECRET`, `LINE_CHANNEL_ACCESS_TOKEN`, `GEMINI_API_KEY` set at service level; `JWT_SECRET` is auto-generated into Turso settings. LINE bot (AI Q&A, feedback, group announce) is fully live and verified; LINE 彙整/轉送（line-sources/digest/send）隨 2026-08-10 部署上線、AI 公告（announce generate/match/send + LINE 關鍵字草稿觸發）隨 2026-08-11 部署上線（body-probe 已確認新程式碼生效）。`GEMINI_MODEL`/`GEMINI_GROUNDING` 未在 Railway 設定（用預設模型、不啟用搜尋）。
+**Current live state (2026-08)**: production has `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `LINE_CHANNEL_SECRET`, `LINE_CHANNEL_ACCESS_TOKEN`, `GEMINI_API_KEY` set at service level; `JWT_SECRET` is auto-generated into Turso settings. LINE bot (AI Q&A, feedback, group announce) is fully live and verified; LINE 彙整/轉送（line-sources/digest/send）隨 2026-08-10 部署上線、AI 公告（announce generate/match/send + LINE 關鍵字草稿觸發）隨 2026-08-11 部署上線（body-probe 已確認新程式碼生效）。2026-08-12：群組成員同步（announce/sync，含 line_messages 發送者後備）＋ webhook 送達診斷（line-diag）上線；已確認正式環境為**一般官方帳號**（members/ids 不可用，同步只能收錄有發言過的成員）且個別推播需各社先加好友。`GEMINI_MODEL`/`GEMINI_GROUNDING` 未在 Railway 設定（用預設模型、不啟用搜尋）。
 
 ### Railway GraphQL API (account token — works, `railway` CLI doesn't)
 - Endpoint: `https://backboard.railway.com/graphql/v2` (or `backboard.railway.app`), header `Authorization: Bearer <token>`, `Content-Type: application/json`, body `{"query":"..."}`.
@@ -185,7 +185,7 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 ## API Routes
 - `POST /api/login` — returns JWT token (rate-limited: 10 attempts / 15 min)
 - `GET /api/me` — current club/admin info (auth required)
-- `GET /api/summary` — public stats (no auth): per-club `phase1_registered/standby/paid/phase1_total/phase2_count` + totals `phase1Total`, `phase1PaidTotal`, `phase2Total` + `settings` (deadlines, quotas)
+- `GET /api/summary` — public stats (no auth): per-club `phase1_registered/standby/paid/phase1_total/phase2_count` + totals `phase1Total`, `phase1PaidTotal`, `phase2Total` + `settings` (deadlines, quotas)；**只列一般社團**（`WHERE is_admin=0 AND (admin_perms IS NULL OR admin_perms='')`，次管理者不算社，別把這條件簡化掉）
 - `POST /api/registrations` — create registration (auth required; phase & status derived from dates, auto-standby logic)
 - `GET /api/my-registrations` — list club's registrations (auth required)
 - `PUT /api/registrations/:id` / `DELETE /api/registrations/:id` — club edits/deletes own registration; rejected when status is `paid`/`forfeited`
@@ -285,6 +285,7 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 - LINE 群組訊息：現行平台會把群組內**所有**訊息事件送到 bot（無需 @提及；被 @ 時額外帶 `mention.mentionees[].isSelf=true` metadata）。webhook 先 ack 200 再異步處理事件。`feedback` 表含在 backup/restore 中。
 - LINE 彙整與轉送（管理後台「LINE 彙整」tab）：來源＝`line_messages` 去重（群組/個別社 1:1 都收）；管理員選來源＋時間範圍＋彙整類型 →「彙整並直接傳送」一鍵呼叫 `POST /api/admin/line-digest` 產出後 `POST /api/admin/line-send` 推送到指定對象（個別社 push 需要對方已加官方帳號好友，非好友 501）；「僅預覽」只產出不送出。
 - AI 公告（管理後台「AI 公告」tab）：貼入原始資料（社號/社名/日期/事項，如催繳名單）＋選擇性指示 → `generateAnnouncement()`（Gemini）並行產出群組總公告版與各社個別版 → 各社自動比對 `line_sources.source_name`（含社號或社名；群組優先），可編輯內容、逐社或全部傳送、逐筆回報結果。**比對不到來源時先按「同步群組成員名單」**（`syncGroupMembers()` 拉群組內所有成員進 `line_sources`，名稱含社號如「2401 眉溪--秀珍LYU」，同步後自動重新比對）——只有傳過訊息給 bot 的人原本就會被收錄，其他群組成員必須同步後才比得到。群組總公告在 LINE 主群組發「公告：<原始資料>」給 bot 即可讓 bot 產生草稿回覆（**僅限區會主群組觸發，只回覆草稿不自動推播**，正式推播一律走管理後台）。
+- **LINE 好友與帳號類型限制**（個別推播/比對成敗關鍵）：① 抓用戶 profile（名字）與個別 push 都**必須對方已加官方帳號好友**（非好友：profile 404、push 回報 failed）；群組推播（`pushToGroup`）只需 bot 在群組、**不需好友**。② `GET /v2/bot/group/{id}/members/ids`（列出全群成員）**僅限認證帳號/企業官方帳號**（LINE 官方文件明載）；一般官方帳號（灰盾）呼叫會失敗 → `syncGroupMembers()` 自動 fallback 只收錄「該群組在 `line_messages` 實際發過訊息的人」——曾見「同步只收到管理員自己」就是此因。③ 實務：要個別推播 → 請各社代表**加好友＋在群組傳過一則訊息**（或私訊 bot 一句）後再按同步；LINE 官方帳號**沒有「自動加入好友」開關**（好友只能由用戶主動加 QR/連結），不要找這設定。
 - LINE Developers 主控台（非程式碼）gotchas：① Channel → Messaging API 頁籤需將「使用 Webhook」設為 ON，Webhook URL 指向 `https://.../line/webhook`；② 官方帳號「自動回應訊息」若未停用，用戶會同時收到 LINE 預設回覆與 bot 回覆（設定位置：manager.line.biz → 設定 → 回應訊息）；③ 「自動退出群組」開關若開啟，bot 被邀請進群會立刻自動退出（曾踩坑：bot 反覆進群即退，直到主控台關閉該設定）。
 - Gemini 模型注意：模型名稱由 `GEMINI_MODEL` 控制（預設 `gemini-3.5-flash-lite`），改動後重啟生效。曾因 API key 對 `gemini-2.0-flash` 免費額度為 0（429 limit:0）導致 bot 回退「AI 助理尚未設定」，改用 `gemini-2.5-flash` 後正常；若未來再遇 429，可先用 `generateContent` 實測各模型額度，再調整 `GEMINI_MODEL`。
 - 免費 key 可用範圍：**一般問答與彙整（無搜尋）免費 key 即可**（`gemini-3.5-flash-lite` 輸入/輸出免費）；**網路搜尋（Grounding with Google Search）官方明載 Free tier 不支援，必須付費 key**。付費後 Gemini 3 系每月 5,000 次搜尋免費、超過 $14/1000 次；付費另享較高 rate limit（免費 tier 有 RPM/RPD 上限，群組訊息量大時可能卡額度）。
