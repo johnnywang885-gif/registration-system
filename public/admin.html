@@ -1389,7 +1389,17 @@
         });
         const data = await res.json();
         if (!res.ok) { toast(data.error || '同步失敗', 'error'); return; }
-        toast(data.message || `已同步 ${data.enrolled || 0} 位成員`);
+        const samples = (data.samples && data.samples.length)
+          ? '；例如：' + data.samples.join('、')
+          : '';
+        if (data.enrolled > 0) {
+          toast(`已同步 ${data.enrolled} 位群組成員${samples}`, 'success');
+        } else {
+          const why = (data.groups && data.groups.length)
+            ? `群組：${data.groups.map(g => (g.ok ? 'OK' : 'LINE 回 status ' + g.status)).join('、')}`
+            : '目前沒有群組來源（群組事件會自動記錄，若 bot 未在群組或無事件則為空）';
+          toast(`同步 0 位（${why}）`, 'error');
+        }
         if (announceState.raw) {
           msg.textContent = '同步完成，重新比對中...';
           await renderAnnounceResult(announceState.raw);

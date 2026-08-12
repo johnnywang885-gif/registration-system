@@ -973,8 +973,8 @@ function startServer() {
   app.post('/api/admin/line-sources/refresh', authMiddleware, requirePerm('linedigest'), async (req, res) => {
     try {
       const updated = await refreshSourceNames();
-      const enrolled = await syncGroupMembers();
-      res.json({ message: `已更新 ${updated} 個來源名稱、同步 ${enrolled} 位群組成員`, updated, enrolled });
+      const sync = await syncGroupMembers();
+      res.json({ message: `已更新 ${updated} 個來源名稱、同步 ${sync.enrolled} 位群組成員`, updated, enrolled: sync.enrolled, failed: sync.failed, groups: sync.groups, samples: sync.samples });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
@@ -1043,8 +1043,17 @@ function startServer() {
 
   app.post('/api/admin/announce/sync', authMiddleware, requirePerm('announce'), async (req, res) => {
     try {
-      const enrolled = await syncGroupMembers();
-      res.json({ message: `已同步 ${enrolled} 位群組成員（名稱含社號或社名者即可被比對）`, enrolled });
+      const sync = await syncGroupMembers();
+      const detail = sync.groups.length
+        ? sync.groups.map(g => `${g.ok ? 'OK' : '失敗(status ' + g.status + ')'}:${g.apiMembers + g.fallbackMembers}人`).join('、')
+        : '無群組來源';
+      res.json({
+        message: `已同步 ${sync.enrolled} 位群組成員（${detail}）`,
+        enrolled: sync.enrolled,
+        failed: sync.failed,
+        groups: sync.groups,
+        samples: sync.samples
+      });
     } catch (err) {
       console.error('Announce sync error:', err.message);
       res.status(500).json({ error: err.message });

@@ -310,10 +310,11 @@ async function refreshSourceNames() {
 
 // ===== 群組成員名單同步（把群組內所有成員拉進 line_sources，名稱含社號即可被 AI 公告比對） =====
 async function syncGroupMembers() {
-  if (!CHANNEL_ACCESS_TOKEN) return 0;
+  const report = { enrolled: 0, failed: 0, groups: [], samples: [] };
+  if (!CHANNEL_ACCESS_TOKEN) return report;
   const groups = await getAll("SELECT source_id FROM line_sources WHERE source_type = 'group'");
-  let enrolled = 0;
   for (const g of groups) {
+    const gInfo = { source_id: g.source_id, ok: false, status: null, apiMembers: 0, fallbackMembers: 0 };
     try {
       let start;
       const memberIds = [];
@@ -321,7 +322,9 @@ async function syncGroupMembers() {
         const url = `${LINE_API}/group/${encodeURIComponent(g.source_id)}/members/ids` + (start ? `?start=${encodeURIComponent(start)}` : '');
         const res = await fetch(url, { headers: { 'Authorization': `Bearer ${CHANNEL_ACCESS_TOKEN}` } });
         if (!res.ok) {
-          console.error('Group members error:', res.status, g.source_id);
+          const body = await res.text().catch(() => '');
+          console.error('Group members error:', res.status, g.source_id, body.slice(0, 200));
+          gInfo.status = res.status;
           start = null;
           break;
         }
@@ -330,12 +333,14 @@ async function syncGroupMembers() {
         start = data.next || null;
       } while (start);
 
+      gInfo.apiMembers = memberIds.length;
+      gInfo.ok = memberIds.length > 0;
       for (const memberId of memberIds) {
         try {
           const pRes = await fetch(`${LINE_API}/profile/${encodeURIComponent(memberId)}`, {
             headers: { 'Authorization': `Bearer ${CHANNEL_ACCESS_TOKEN}` }
           });
-          if (!pRes.ok) continue;
+          if (!pRes.ok) { report.failed++; continue; }
           const pData = await pRes.json();
           await runQuery(
             `INSERT INTO line_sources (source_type, source_id, source_name)
@@ -343,16 +348,48 @@ async function syncGroupMembers() {
              ON CONFLICT(source_type, source_id) DO UPDATE SET source_name = excluded.source_name`,
             [memberId, pData.displayName || null]
           );
-          enrolled++;
+          report.enrolled++;
+          if (report.samples.length < 5) report.samples.push(String(pData.displayName || memberId));
         } catch (err) {
           console.error('syncGroupMembers profile error:', err.message, memberId);
+          report.failed++;
+        }
+      }
+
+      // 後備：members/ids 失敗時，至少收錄該群組實際發過訊息的人（sender_id）
+      if (!gInfo.ok) {
+        const senders = await getAll(
+          "SELECT DISTINCT sender_id FROM line_messages WHERE source_type = 'group' AND source_id = ? AND sender_id IS NOT NULL",
+          [g.source_id]
+        );
+        for (const s of senders) {
+          try {
+            const pRes = await fetch(`${LINE_API}/profile/${encodeURIComponent(s.sender_id)}`, {
+              headers: { 'Authorization': `Bearer ${CHANNEL_ACCESS_TOKEN}` }
+            });
+            if (!pRes.ok) continue;
+            const pData = await pRes.json();
+            await runQuery(
+              `INSERT INTO line_sources (source_type, source_id, source_name)
+               VALUES ('user', ?, ?)
+               ON CONFLICT(source_type, source_id) DO UPDATE SET source_name = excluded.source_name`,
+              [s.sender_id, pData.displayName || null]
+            );
+            report.enrolled++;
+            gInfo.fallbackMembers++;
+            if (report.samples.length < 5) report.samples.push(String(pData.displayName || s.sender_id));
+          } catch (err) {
+            console.error('syncGroupMembers fallback profile error:', err.message, s.sender_id);
+          }
         }
       }
     } catch (err) {
       console.error('syncGroupMembers error:', err.message);
+      gInfo.status = -1;
     }
+    report.groups.push(gInfo);
   }
-  return enrolled;
+  return report;
 }
 
 function guessCategory(text) {
@@ -373,6 +410,13 @@ async function saveFeedback(clubId, displayName, category, message) {
 async function handleLineEvent(event) {
   if (event.source) {
     await recordLineSource(event);
+    // 群組事件（join 或群組訊息）寫入主群組 ID，供群組推播使用
+    if (event.source.type === 'group' && event.source.groupId) {
+      await runQuery(
+        "INSERT INTO settings (key, value) VALUES ('line_group_id', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        [String(event.source.groupId)]
+      ).catch(err => console.error('save line_group_id error:', err.message));
+    }
   }
 
   if (event.type === 'join' && event.source && event.source.groupId) {
