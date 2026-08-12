@@ -406,6 +406,46 @@ async function syncGroupMembers() {
   return report;
 }
 
+// ===== Webhook 送達診斷計數（settings 表，供後台一鍵查看 LINE 事件是否有送達） =====
+async function recordWebhookDiag(status, events) {
+  try {
+    const now = new Date().toISOString();
+    if (status === 'ping') {
+      await runQuery(
+        "INSERT INTO settings (key, value) VALUES ('webhook_pings', '1') ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)"
+      );
+    } else if (status === 'reject') {
+      await runQuery(
+        "INSERT INTO settings (key, value) VALUES ('webhook_rejected', '1') ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)"
+      );
+    } else if (status === 'events') {
+      const srcs = Array.isArray(events) ? events
+        .filter(e => e && e.source)
+        .map(e => `${e.source.type || '?'}:${e.source[`${e.source.type}Id`] || e.source.userId || '?'}`)
+        .join(',') : '';
+      const types = Array.isArray(events) ? events.map(e => e.type || '?').join(',') : '';
+      await runQuery(
+        "INSERT INTO settings (key, value) VALUES ('webhook_events', '1') ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + ? AS TEXT)",
+        [Array.isArray(events) ? events.length : 0]
+      );
+      await runQuery(
+        "INSERT INTO settings (key, value) VALUES ('webhook_last_at', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        [now]
+      );
+      await runQuery(
+        "INSERT INTO settings (key, value) VALUES ('webhook_last_types', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        [types]
+      );
+      await runQuery(
+        "INSERT INTO settings (key, value) VALUES ('webhook_last_sources', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        [srcs]
+      );
+    }
+  } catch (err) {
+    console.error('recordWebhookDiag error:', err.message);
+  }
+}
+
 function guessCategory(text) {
   if (['壞掉', 'bug', '臭蟲', '錯誤'].some(k => text.includes(k))) return '錯誤回報';
   if (['建議', '希望', '改進', '功能'].some(k => text.includes(k))) return '功能建議';
@@ -483,4 +523,4 @@ async function handleLineEvent(event) {
   await replyMessage(event.replyToken, answer || 'AI 助理尚未設定完成，請直接聯絡督導或區會幹事。');
 }
 
-module.exports = { verifySignature, handleLineEvent, pushToGroup, pushToUser, pushToLineUser, refreshSourceNames, syncGroupMembers, summarizeMessages, generateAnnouncement, getGroundingUsage, canUseGrounding, recordGroundingUse };
+module.exports = { verifySignature, handleLineEvent, pushToGroup, pushToUser, pushToLineUser, refreshSourceNames, syncGroupMembers, summarizeMessages, generateAnnouncement, getGroundingUsage, canUseGrounding, recordGroundingUse, recordWebhookDiag };

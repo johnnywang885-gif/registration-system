@@ -205,6 +205,7 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 - `GET /api/admin/feedback` / `PUT /api/admin/feedback/:id` — list (open first, newest first) / toggle open↔done (admin only)
 - `POST /api/admin/line-announce` — push a message to the LINE group the bot joined (admin only; 501 if LINE not configured)
 - `GET /api/admin/line-sources` — list LINE 彙整 sources (`line_sources` + per-source message counts; admin only)
+- `GET /api/admin/line-diag` — webhook 送達診斷（admin；`recordWebhookDiag()` 在每次 webhook POST 把計數寫進 settings：`webhook_pings`/`webhook_events`/`webhook_rejected`/`webhook_last_at`/`webhook_last_types`/`webhook_last_sources`，另有 `line_group_id`），回應含 `line_sources`/`line_messages` 筆數；UI 在 LINE 彙整 tab「Webhook 診斷」按鈕——測試法：記下收件總數→群組傳訊息→再查，數字不動代表 LINE 主控台沒把事件送到本系統（查「使用 Webhook」開關/URL）
 - `POST /api/admin/line-sources/refresh` — re-fetch source names from LINE (group summary / profile APIs) **並且同步群組全部成員進 `line_sources`（＝announce/sync）**（admin only; failures keep old values）
 - `POST /api/admin/line-digest` — digest messages from one source (body: `source_type`/`source_id`/`since`/`until`/`kind` summary|questions; max 500 rows; 400 when no messages in range; 500 graceful when Gemini unavailable)
 - `POST /api/admin/line-send` — push arbitrary text to a target (`target_type` group|user + `target_id`; user push needs the user to have added the official account as friend, else 501)

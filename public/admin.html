@@ -246,6 +246,7 @@
           <button class="btn btn-primary" id="btnDigestSend" onclick="runLineDigest(true)">彙整並直接傳送</button>
           <button class="btn btn-secondary" onclick="runLineDigest(false)">僅預覽</button>
           <button class="btn btn-warning btn-sm" onclick="refreshLineSources()">重新整理名稱</button>
+          <button class="btn btn-secondary btn-sm" onclick="runLineDiag()">Webhook 診斷</button>
           <span id="digestMsg" style="margin-left:12px; font-size:13px; color:#4a3728;"></span>
         </div>
         <div class="loading hidden" id="loadingDigest">
@@ -1306,6 +1307,38 @@
         loadLineSources();
       } catch (err) {
         toast('更新失敗', 'error');
+      }
+      msg.textContent = '';
+    }
+
+    async function runLineDiag() {
+      const msg = document.getElementById('digestMsg');
+      msg.textContent = '讀取中...';
+      try {
+        const res = await fetch('/api/admin/line-diag', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        const d = await res.json();
+        if (!res.ok) { toast(d.error || '讀取失敗', 'error'); return; }
+        const q = d.diag || {};
+        const fmt = t => t ? t.replace('T', ' ').slice(0, 19) : '(無)';
+        document.getElementById('digestResult').innerHTML = `
+          <div class="card" style="margin-bottom:0;">
+            <h4 style="margin-bottom:12px;">Webhook 送達診斷</h4>
+            <div style="font-size:14px; line-height:1.9;">
+              <b>收件總數（ping）</b>：${q.webhook_pings || 0} 次 &nbsp;｜&nbsp;
+              <b>事件總數</b>：${q.webhook_events || 0} 個 &nbsp;｜&nbsp;
+              <b>簽章拒絕</b>：${q.webhook_rejected || 0} 次<br>
+              <b>最後收到事件</b>：${fmt(q.webhook_last_at)}（類型：${q.webhook_last_types || '(無)'}）<br>
+              <b>最後事件來源</b>：${q.webhook_last_sources || '(無)'}<br>
+              <b>主群組 ID</b>：${q.line_group_id || '(尚未記錄)'}<br>
+              <b>line_sources</b>：群組 ${d.line_sources.groups} 個、個別社 ${d.line_sources.users} 個<br>
+              <b>line_messages</b>：群組 ${d.line_messages.groups} 則、個別社 ${d.line_messages.users} 則（最後 ${fmt(d.line_messages.last)}）
+            </div>
+            <div style="margin-top:12px; font-size:13px; color:#8a5a3b;">測試方法：記下「收件總數」→ 到 LINE 群組傳一則訊息 → 再按一次診斷，若收件總數沒增加代表 LINE 主控台沒有把事件送到本系統（檢查「使用 Webhook」開關與 Webhook URL）。</div>
+          </div>`;
+      } catch (err) {
+        toast('讀取失敗: ' + err.message, 'error');
       }
       msg.textContent = '';
     }

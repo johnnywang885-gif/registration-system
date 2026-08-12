@@ -10,7 +10,7 @@ const XLSX = require('xlsx');
 const { initDatabase, getAll, getOne, runQuery, insert, importClubs, saveDatabase, getDb, ensureAdminPermsColumn } = require('./database');
 const { generateToken, authMiddleware, anyAdminMiddleware, adminMiddleware, requirePerm, getAdminPerms, ADMIN_PERMS } = require('./auth');
 const { taipeiToday, phaseState, getSettings, occupancy, promoteStandby, forfeitUnpaidByPhase, runEnforcement, enforceDeadlines } = require('./deadlines');
-const { verifySignature, handleLineEvent, pushToGroup, pushToUser, pushToLineUser, refreshSourceNames, syncGroupMembers, summarizeMessages, generateAnnouncement } = require('./linebot');
+const { verifySignature, handleLineEvent, pushToGroup, pushToUser, pushToLineUser, refreshSourceNames, syncGroupMembers, summarizeMessages, generateAnnouncement, recordWebhookDiag } = require('./linebot');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -932,12 +932,36 @@ function startServer() {
   app.post('/line/webhook', async (req, res) => {
     const events = (req.body && req.body.events) || [];
     const signature = req.headers['x-line-signature'];
+    recordWebhookDiag('ping', events);
     if (events.length > 0 && !verifySignature(req.rawBody, signature)) {
+      recordWebhookDiag('reject', events);
       return res.status(401).json({ error: 'invalid signature' });
     }
     res.status(200).json({ status: 'ok' });
+    if (events.length > 0) recordWebhookDiag('events', events);
     for (const event of events) {
       handleLineEvent(event).catch(err => console.error('LINE event error:', err.message));
+    }
+  });
+
+  app.get('/api/admin/line-diag', authMiddleware, requirePerm('linedigest'), async (req, res) => {
+    try {
+      const rows = await getAll("SELECT key, value FROM settings WHERE key IN ('webhook_pings','webhook_events','webhook_rejected','webhook_last_at','webhook_last_types','webhook_last_sources','line_group_id')");
+      const diag = {};
+      rows.forEach(r => { diag[r.key] = r.value; });
+      const groups = await getOne("SELECT COUNT(*) as cnt FROM line_sources WHERE source_type = 'group'");
+      const users = await getOne("SELECT COUNT(*) as cnt FROM line_sources WHERE source_type = 'user'");
+      const groupMsgs = await getOne("SELECT COUNT(*) as cnt FROM line_messages WHERE source_type = 'group'");
+      const userMsgs = await getOne("SELECT COUNT(*) as cnt FROM line_messages WHERE source_type = 'user'");
+      const lastMsg = await getOne("SELECT MAX(created_at) as t FROM line_messages");
+      res.json({
+        diag,
+        line_sources: { groups: groups?.cnt || 0, users: users?.cnt || 0 },
+        line_messages: { groups: groupMsgs?.cnt || 0, users: userMsgs?.cnt || 0, last: lastMsg?.t || null }
+      });
+    } catch (err) {
+      console.error('Line diag error:', err.message);
+      res.status(500).json({ error: err.message });
     }
   });
 
