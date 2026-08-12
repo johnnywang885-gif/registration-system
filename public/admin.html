@@ -1397,7 +1397,7 @@
         } else {
           const why = (data.groups && data.groups.length)
             ? `群組：${data.groups.map(g => (g.ok ? 'OK' : 'LINE 回 status ' + g.status)).join('、')}`
-            : '目前沒有群組來源（群組事件會自動記錄，若 bot 未在群組或無事件則為空）';
+            : '找不到任何群組（請確認 bot 已被加入 LINE 群組，且在群組傳一則訊息後再同步）';
           toast(`同步 0 位（${why}）`, 'error');
         }
         if (announceState.raw) {

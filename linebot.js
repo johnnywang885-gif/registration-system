@@ -312,7 +312,21 @@ async function refreshSourceNames() {
 async function syncGroupMembers() {
   const report = { enrolled: 0, failed: 0, groups: [], samples: [] };
   if (!CHANNEL_ACCESS_TOKEN) return report;
-  const groups = await getAll("SELECT source_id FROM line_sources WHERE source_type = 'group'");
+  // 群組來源：line_sources 的 group 列 ∪ 歷史群組訊息中出現過的 groupId（補回可能遺失的群組列）
+  const row1 = await getAll("SELECT source_id FROM line_sources WHERE source_type = 'group'");
+  const row2 = await getAll("SELECT DISTINCT source_id FROM line_messages WHERE source_type = 'group' AND source_id IS NOT NULL");
+  const seen = new Map();
+  row1.forEach(r => seen.set(r.source_id, true));
+  for (const r of row2) {
+    if (!seen.has(r.source_id)) {
+      await runQuery(
+        "INSERT OR IGNORE INTO line_sources (source_type, source_id) VALUES ('group', ?)",
+        [r.source_id]
+      ).catch(() => {});
+      seen.set(r.source_id, true);
+    }
+  }
+  const groups = [...seen.keys()].map(id => ({ source_id: id }));
   for (const g of groups) {
     const gInfo = { source_id: g.source_id, ok: false, status: null, apiMembers: 0, fallbackMembers: 0 };
     try {
