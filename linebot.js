@@ -308,6 +308,53 @@ async function refreshSourceNames() {
   return updated;
 }
 
+// ===== 群組成員名單同步（把群組內所有成員拉進 line_sources，名稱含社號即可被 AI 公告比對） =====
+async function syncGroupMembers() {
+  if (!CHANNEL_ACCESS_TOKEN) return 0;
+  const groups = await getAll("SELECT source_id FROM line_sources WHERE source_type = 'group'");
+  let enrolled = 0;
+  for (const g of groups) {
+    try {
+      let start;
+      const memberIds = [];
+      do {
+        const url = `${LINE_API}/group/${encodeURIComponent(g.source_id)}/members/ids` + (start ? `?start=${encodeURIComponent(start)}` : '');
+        const res = await fetch(url, { headers: { 'Authorization': `Bearer ${CHANNEL_ACCESS_TOKEN}` } });
+        if (!res.ok) {
+          console.error('Group members error:', res.status, g.source_id);
+          start = null;
+          break;
+        }
+        const data = await res.json();
+        (data.memberIds || []).forEach(id => memberIds.push(id));
+        start = data.next || null;
+      } while (start);
+
+      for (const memberId of memberIds) {
+        try {
+          const pRes = await fetch(`${LINE_API}/profile/${encodeURIComponent(memberId)}`, {
+            headers: { 'Authorization': `Bearer ${CHANNEL_ACCESS_TOKEN}` }
+          });
+          if (!pRes.ok) continue;
+          const pData = await pRes.json();
+          await runQuery(
+            `INSERT INTO line_sources (source_type, source_id, source_name)
+             VALUES ('user', ?, ?)
+             ON CONFLICT(source_type, source_id) DO UPDATE SET source_name = excluded.source_name`,
+            [memberId, pData.displayName || null]
+          );
+          enrolled++;
+        } catch (err) {
+          console.error('syncGroupMembers profile error:', err.message, memberId);
+        }
+      }
+    } catch (err) {
+      console.error('syncGroupMembers error:', err.message);
+    }
+  }
+  return enrolled;
+}
+
 function guessCategory(text) {
   if (['壞掉', 'bug', '臭蟲', '錯誤'].some(k => text.includes(k))) return '錯誤回報';
   if (['建議', '希望', '改進', '功能'].some(k => text.includes(k))) return '功能建議';
@@ -378,4 +425,4 @@ async function handleLineEvent(event) {
   await replyMessage(event.replyToken, answer || 'AI 助理尚未設定完成，請直接聯絡督導或區會幹事。');
 }
 
-module.exports = { verifySignature, handleLineEvent, pushToGroup, pushToUser, pushToLineUser, refreshSourceNames, summarizeMessages, generateAnnouncement, getGroundingUsage, canUseGrounding, recordGroundingUse };
+module.exports = { verifySignature, handleLineEvent, pushToGroup, pushToUser, pushToLineUser, refreshSourceNames, syncGroupMembers, summarizeMessages, generateAnnouncement, getGroundingUsage, canUseGrounding, recordGroundingUse };

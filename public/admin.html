@@ -268,6 +268,7 @@
           </div>
           <div class="btn-group">
             <button class="btn btn-primary" onclick="runAnnounceGenerate()">產生公告</button>
+            <button class="btn btn-secondary" onclick="syncAnnounceSources()">同步群組成員名單</button>
             <span id="annMsg" style="margin-left:12px; font-size:13px; color:#4a3728;"></span>
           </div>
           <div class="loading hidden" id="loadingAnnounce">
@@ -1378,6 +1379,28 @@
     // === AI 公告 ===
     let announceState = { broadcast: '', items: [] };
 
+    async function syncAnnounceSources() {
+      const msg = document.getElementById('annMsg');
+      msg.textContent = '同步中（依群組人數需數秒至數十秒）...';
+      try {
+        const res = await fetch('/api/admin/announce/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }
+        });
+        const data = await res.json();
+        if (!res.ok) { toast(data.error || '同步失敗', 'error'); return; }
+        toast(data.message || `已同步 ${data.enrolled || 0} 位成員`);
+        if (announceState.raw) {
+          msg.textContent = '同步完成，重新比對中...';
+          await renderAnnounceResult(announceState.raw);
+        }
+      } catch (err) {
+        toast('同步失敗: ' + err.message, 'error');
+      } finally {
+        msg.textContent = '';
+      }
+    }
+
     async function runAnnounceGenerate() {
       const raw = document.getElementById('annRaw').value.trim();
       const instructions = document.getElementById('annInstructions').value.trim();
@@ -1418,6 +1441,7 @@
         } catch (e) {}
       }
       announceState = {
+        raw: data,
         broadcast: data.broadcast || '',
         items: perClub.map(p => ({ club_id: p.club_id, club_name: p.club_name, message: p.message, match: matchMap[p.club_id] }))
       };

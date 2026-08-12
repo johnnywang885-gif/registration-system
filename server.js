@@ -10,7 +10,7 @@ const XLSX = require('xlsx');
 const { initDatabase, getAll, getOne, runQuery, insert, importClubs, saveDatabase, getDb, ensureAdminPermsColumn } = require('./database');
 const { generateToken, authMiddleware, anyAdminMiddleware, adminMiddleware, requirePerm, getAdminPerms, ADMIN_PERMS } = require('./auth');
 const { taipeiToday, phaseState, getSettings, occupancy, promoteStandby, forfeitUnpaidByPhase, runEnforcement, enforceDeadlines } = require('./deadlines');
-const { verifySignature, handleLineEvent, pushToGroup, pushToUser, pushToLineUser, refreshSourceNames, summarizeMessages, generateAnnouncement } = require('./linebot');
+const { verifySignature, handleLineEvent, pushToGroup, pushToUser, pushToLineUser, refreshSourceNames, syncGroupMembers, summarizeMessages, generateAnnouncement } = require('./linebot');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -218,7 +218,7 @@ function startServer() {
           MAX(r.created_at) as last_register_time
         FROM clubs c
         LEFT JOIN registrations r ON c.club_id = r.club_id AND r.status != 'forfeited'
-        WHERE c.is_admin = 0
+        WHERE c.is_admin = 0 AND (c.admin_perms IS NULL OR c.admin_perms = '')
         GROUP BY c.club_id, c.club_name
         ORDER BY last_register_time IS NULL, last_register_time ASC, c.club_id
       `);
@@ -908,7 +908,7 @@ function startServer() {
         COUNT(CASE WHEN ${totalCond} THEN 1 END) as total_count
       FROM clubs c
       LEFT JOIN registrations r ON c.club_id = r.club_id
-      WHERE c.is_admin = 0 AND ${clubCond}
+      WHERE c.is_admin = 0 AND (c.admin_perms IS NULL OR c.admin_perms = '') AND ${clubCond}
       GROUP BY c.club_id, c.club_name
       ORDER BY c.club_id
     `);
@@ -973,7 +973,8 @@ function startServer() {
   app.post('/api/admin/line-sources/refresh', authMiddleware, requirePerm('linedigest'), async (req, res) => {
     try {
       const updated = await refreshSourceNames();
-      res.json({ message: `已更新 ${updated} 個來源名稱`, updated });
+      const enrolled = await syncGroupMembers();
+      res.json({ message: `已更新 ${updated} 個來源名稱、同步 ${enrolled} 位群組成員`, updated, enrolled });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
@@ -1037,6 +1038,16 @@ function startServer() {
     } catch (err) {
       console.error('Announce generate error:', err.message);
       res.status(500).json({ error: '產生失敗: ' + err.message });
+    }
+  });
+
+  app.post('/api/admin/announce/sync', authMiddleware, requirePerm('announce'), async (req, res) => {
+    try {
+      const enrolled = await syncGroupMembers();
+      res.json({ message: `已同步 ${enrolled} 位群組成員（名稱含社號或社名者即可被比對）`, enrolled });
+    } catch (err) {
+      console.error('Announce sync error:', err.message);
+      res.status(500).json({ error: err.message });
     }
   });
 
