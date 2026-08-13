@@ -13,8 +13,11 @@ No lint, typecheck, or test scripts exist. This is a plain JS project with no bu
 
 `dotenv` auto-loads `.env` (gitignored). The local `.env` has **empty** `TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN` — real Turso credentials exist only on Railway. `npm start` locally boots fine but every `/api` call returns 500 until a real Turso URL/token is supplied.
 
+**`README.md` is stale** — trust this file over it (README predates LINE bot/Gemini/knowledge tables, and its "JWT_SECRET 未設定會使登入失效" claim is wrong: `JWT_SECRET` is now auto-generated and persisted in Turso `settings`).
+
 ## Verification (no test framework)
-- Syntax check: `node --check server.js deadlines.js database.js auth.js linebot.js`
+- Syntax check: `node --check server.js deadlines.js database.js auth.js linebot.js knowledge_import.js`
+- Local Node must be **≥20.16** (pdf-parse v2 requires `process.getBuiltinModule`); `package.json` `"engines"` pins Railway to Node 22 — don't remove it.
 - `@libsql/client` accepts `file:` URLs, so the whole stack (database.js + deadlines.js + server.js) runs against a local SQLite file: set `TURSO_DATABASE_URL=file:C:/abs/path.db`, `TURSO_AUTH_TOKEN=`, then call `initDatabase()` + `runEnforcement()` directly or boot `server.js`.
 - Real-data offline test (never touches production): login as admin (use the real production password — see Auth section; the default `admin123` works only on fresh local DBs) → `GET /api/admin/backup` returns full JSON (`clubs`, `registrations`, `payment_proofs`, `settings`, `feedback`, `line_messages`, `line_sources`) → seed it into a local `file:` copy → run `deadlines.js` enforcement against the copy. Do NOT point enforcement at the real Turso DB.
 - `deadlines.js` `taipeiToday()` always uses the real Taipei date — to simulate other phases, edit the `settings` rows (deadline dates) in the local copy, not the clock.
@@ -162,6 +165,7 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 - `variableUpsert` input fields: **`name`** (the variable key — NOT `key`), `value`, `projectId`, `serviceId`, `environmentId`, `skipDeploys`. Returns `Boolean!` — **no selection** (adding `{ id }` → 400). Env changes auto-trigger a redeploy (unless `skipDeploys`); rapid upserts dedupe into one deploy, extras show `REMOVED`.
 - `variables` query: `variables(projectId, environmentId, serviceId)` returns a JSON map, **no selection**. **Must pass `serviceId`** or you only see project-level vars (the linebot/Gemini vars will appear missing).
 - `deployments`: `deployments(input: { projectId, serviceId, environmentId }, first: N) { edges { node { id status createdAt } } }`.
+- **Deploy logs**: `deploymentLogs(deploymentId, limit)` / `buildLogs(deploymentId, limit)` return a plain list `[{ message }]` — no edges; **omit `limit` or select anything besides `message` → 400**. Use them to see the exact crash/healthcheck failure text when a deploy shows `FAILED` (buildLogs covers build + healthcheck; deploymentLogs covers runtime — e.g. the `Node.js v18.20.5` crash footer from running on too-old Node).
 - Redeploy latest commit: `serviceInstanceDeployV2(serviceId, environmentId)` — returns `String!` (deployment id, **no selection**). There is also `serviceInstanceDeploy(serviceId, environmentId, commitSha?, latestCommit?)`.
 - **Transient build failures happen**: a GitHub-triggered deploy once sat `BUILDING` ~10 min then `FAILED` with no retrievable logs (`buildLogs`/`deploymentLogs` often return empty) and meta showing `builder: RAILPACK`/null startCommand even though `railway.json` requests NIXPACKS. Retrying via `serviceInstanceDeployV2` succeeded immediately. Don't chase the failure — check `/health` after redeploy.
 - Real Turso creds are readable via the `variables` query — safe for **read-only SELECT** verification of production state (e.g., `settings.line_group_id`), never run enforcement/backup-restore against the live DB.
