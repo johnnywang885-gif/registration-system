@@ -152,7 +152,7 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 
 **Railway API gotcha**: `variableUpsert` mutation MUST include `serviceId` param, otherwise the variable is set at project level but not exposed to the running service. Query `services` to get the service ID first.
 
-**Current live state (2026-08)**: production has `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `LINE_CHANNEL_SECRET`, `LINE_CHANNEL_ACCESS_TOKEN`, `GEMINI_API_KEY` (paid key — grounding 可用) set at service level; 2026-08-13 另設 `GEMINI_MODEL=gemini-2.5-flash`（預設 `gemini-3.5-flash-lite` 對該 key 搜尋會 429）與 `GEMINI_GROUNDING=on`（三層問答流程完整啟用）。`JWT_SECRET` is auto-generated into Turso settings. LINE bot (AI Q&A, feedback, group announce) is fully live and verified; LINE 彙整/轉送（line-sources/digest/send）隨 2026-08-10 部署上線、AI 公告（announce generate/match/send + LINE 關鍵字草稿觸發）隨 2026-08-11 部署上線（body-probe 已確認新程式碼生效）。2026-08-12：群組成員同步（announce/sync，含 line_messages 發送者後備）＋ webhook 送達診斷（line-diag）上線；已確認正式環境為**一般官方帳號**（members/ids 不可用，同步只能收錄有發言過的成員）且個別推播需各社先加好友。2026-08-13：AI 知識庫與三層問答上線（知識庫 → 網路搜尋註明來源 → 忙線＋自動開單）。
+**Current live state (2026-08)**: production has `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `LINE_CHANNEL_SECRET`, `LINE_CHANNEL_ACCESS_TOKEN`, `GEMINI_API_KEY` (paid key — grounding 可用) set at service level; 2026-08-13 另設 `GEMINI_MODEL=gemini-2.5-flash`（預設 `gemini-3.5-flash-lite` 對該 key 搜尋會 429）與 `GEMINI_GROUNDING=on`（三層問答流程完整啟用）。`JWT_SECRET` is auto-generated into Turso settings. LINE bot (AI Q&A, feedback, group announce) is fully live and verified; LINE 彙整/轉送（line-sources/digest/send）隨 2026-08-10 部署上線、AI 公告（announce generate/match/send + LINE 關鍵字草稿觸發）隨 2026-08-11 部署上線（body-probe 已確認新程式碼生效）。2026-08-12：群組成員同步（announce/sync，含 line_messages 發送者後備）＋ webhook 送達診斷（line-diag）上線；已確認正式環境為**一般官方帳號**（members/ids 不可用，同步只能收錄有發言過的成員）且個別推播需各社先加好友。2026-08-13：AI 知識庫與三層問答上線（知識庫 → 網路搜尋註明來源 → 忙線＋自動開單）。同日第二波：文書上傳匯入（.pdf/.docx/.xls/.xlsx/.txt）上線——因 pdf-parse v2 需 Node ≥20.16 而 Railway 預設 Node 18 曾兩次部署 healthcheck 失敗，`package.json` 已加 `"engines": {"node": "22.x"}` 固定 Node 22 後才成功。
 
 ### Railway GraphQL API (account token — works, `railway` CLI doesn't)
 - Endpoint: `https://backboard.railway.com/graphql/v2` (or `backboard.railway.app`), header `Authorization: Bearer <token>`, `Content-Type: application/json`, body `{"query":"..."}`.
@@ -184,6 +184,7 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 3. **Healthcheck failure**: `app.listen()` not called before DB init
 4. **"Cannot read properties of undefined"**: Missing DB data (new Turso DB needs club import)
 5. **Health works but API 404**: Wrong service URL — the production URL includes a service suffix
+6. **Build OK + image pushed but "1/1 replicas never became healthy"**: runtime crash — pull `deploymentLogs(deploymentId, limit)` (buildLogs works too; `{ message }` list, no edges). Typical cause: a dependency requiring a newer Node than Nixpacks' default Node 18 (pdf-parse v2 needs `process.getBuiltinModule`, Node >=20.16 — crash shows `Node.js v18.20.5` footer). Fix: `package.json` `"engines": { "node": "22.x" }` — **never remove it**, the doc-import stack depends on it.
 
 ## API Routes
 - `POST /api/login` — returns JWT token (rate-limited: 10 attempts / 15 min)
