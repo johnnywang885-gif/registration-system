@@ -89,17 +89,82 @@ async function recordLineMessage(event) {
 }
 
 // ===== Gemini =====
-async function buildKnowledgeBase() {
+async function buildKnowledgeBase(extraEntries = []) {
+  const s = await getSettings();
+  const lines = [
+    '你是「CULROC 區會報名系統」的 AI 助理，請用繁體中文簡潔回答使用者問題。',
+    `目前設定：第一階段截止 ${s.phase1_deadline || '未設定'}、繳費截止 ${s.payment_deadline || '未設定'}、第二階段截止 ${s.phase2_deadline || '未設定'}、每社保障 ${s.guaranteed_quota || 10} 名、總名額 ${s.phase1_total_quota || 160} 人。`,
+    '規則摘要：第一階段超過保障名額或滿 160 人列為候補；繳費截止前未上傳並獲核准之繳費證明者，已報名自動棄權（未繳費視同未報名）；未繳費社團的候補不會自動遞補；第二階段滿 160 人時自動轉候補，需管理員手動遞補。',
+    `系統網址：${SYSTEM_URL}/ ；報名系統簡介：${SYSTEM_URL}/intro.html`
+  ];
+  if (extraEntries && extraEntries.length) {
+    lines.push('===== 社務知識庫（管理員提供的資料，依相關度排序，可能包含與問題無關的條目）=====');
+    lines.push(...extraEntries);
+  }
+  lines.push(
+    '回答規則：',
+    '1. 報名系統相關問題（報名、繳費、階段、遞補）請依上述系統規則與知識庫精準回答；',
+    '2. 只能使用上述系統規則與知識庫中「明確出現」的資訊回答，不得猜測或編造；',
+    '3. 知識庫沒有與問題相關的明確答案時，只回覆「無相關資料」四個字，不要嘗試自行回答；',
+    '4. 絕對不要提供任何個人報名資料（姓名、身分證、手機、生日等）。'
+  );
+  return lines.join('\n');
+}
+
+async function buildWebSearchPrompt() {
   const s = await getSettings();
   return [
     '你是「CULROC 區會報名系統」的 AI 助理，請用繁體中文簡潔回答使用者問題。',
-    '報名系統相關問題請優先依下列系統規則與操作說明精準回答；系統外的問題（一般知識、時事、生活等）也可以正常回答。',
-    '絕對不要提供任何個人報名資料（姓名、身分證、手機、生日等）。',
     `目前設定：第一階段截止 ${s.phase1_deadline || '未設定'}、繳費截止 ${s.payment_deadline || '未設定'}、第二階段截止 ${s.phase2_deadline || '未設定'}、每社保障 ${s.guaranteed_quota || 10} 名、總名額 ${s.phase1_total_quota || 160} 人。`,
     '規則摘要：第一階段超過保障名額或滿 160 人列為候補；繳費截止前未上傳並獲核准之繳費證明者，已報名自動棄權（未繳費視同未報名）；未繳費社團的候補不會自動遞補；第二階段滿 160 人時自動轉候補，需管理員手動遞補。',
     `系統網址：${SYSTEM_URL}/ ；報名系統簡介：${SYSTEM_URL}/intro.html`,
-    '若使用者表達的是對系統的意見、建議或錯誤回報（而非操作疑問），開頭回覆「已收到您的意見」並簡短確認即可。'
+    '回答規則：',
+    '1. 報名系統相關問題（報名、繳費、階段、遞補）請依上述系統規則精準回答，不要用網路資料取代；',
+    '2. 非系統問題可用網路搜尋查證後回答；搜尋結果與問題無關或無法確定時，只回覆「無法回答」四個字，不要編造；',
+    '3. 使用網路搜尋資訊回答時，回答結尾加一行「（資料來源：網路查詢）」；',
+    '4. 絕對不要提供任何個人報名資料（姓名、身分證、手機、生日等）。'
   ].join('\n');
+}
+
+// ===== 知識庫檢索（關鍵字計分，取最相關 top-N 併入 prompt） =====
+function knowledgeScore(text, query) {
+  const q = String(query || '');
+  const bigrams = [];
+  for (let i = 0; i < q.length - 1; i++) {
+    if (/[\u4e00-\u9fff]/.test(q[i]) && /[\u4e00-\u9fff]/.test(q[i + 1])) bigrams.push(q.slice(i, i + 2));
+  }
+  const ids = (q.match(/\d{4}/g) || []);
+  const hasQuery = (hay) => /[A-Za-z0-9]/.test(hay);
+  let score = 0;
+  for (const b of bigrams) if (text.includes(b)) score++;
+  for (const n of ids) if (text.includes(n)) score += 3;
+  if (hasQuery(text) && hasQuery(q)) {
+    for (const t of (q.match(/[A-Za-z0-9]{2,}/g) || [])) if (text.includes(t)) score += 2;
+  }
+  return score;
+}
+
+async function retrieveKnowledge(query, limit = 3, maxChars = 6000) {
+  try {
+    const rows = await getAll("SELECT id, title, content FROM knowledge WHERE active = 1");
+    const scored = rows
+      .map(r => ({ ...r, score: knowledgeScore((r.title || '') + '\n' + (r.content || ''), query) }))
+      .filter(r => r.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit);
+    const chunks = [];
+    let total = 0;
+    for (const r of scored) {
+      const chunk = `【${r.title}】\n${r.content}`;
+      if (total + chunk.length > maxChars) break;
+      chunks.push(chunk);
+      total += chunk.length;
+    }
+    return chunks;
+  } catch (err) {
+    console.error('retrieveKnowledge error:', err.message);
+    return [];
+  }
 }
 
 // ===== Gemini 網路搜尋用量上限（每月計數，防觸動付費） =====
@@ -137,8 +202,8 @@ async function recordGroundingUse() {
   }
 }
 
-async function callGemini(system, userText, options = {}) {
-  if (!GEMINI_API_KEY) return null;
+async function geminiRequest(system, userText, options = {}) {
+  if (!GEMINI_API_KEY) return { text: null, usedGrounding: false, sources: [] };
   const { grounding = false, maxOutputTokens = 500 } = options;
   const groundingOn = grounding && (await canUseGrounding());
   const payload = {
@@ -157,15 +222,26 @@ async function callGemini(system, userText, options = {}) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(p)
       });
-      if (!res.ok) return { ok: false, status: res.status };
+      if (!res.ok) return { ok: false, status: res.status, usedGrounding: false, sources: [] };
       const data = await res.json();
-      const text = data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts
-        ? data.candidates[0].content.parts.map(part => part.text || '').join('')
+      const cand = data.candidates && data.candidates[0];
+      const text = cand && cand.content && cand.content.parts
+        ? cand.content.parts.map(part => part.text || '').join('')
         : null;
-      return { ok: true, text: text ? text.trim() : null };
+      let usedGrounding = false;
+      let sources = [];
+      if (cand && cand.groundingMetadata) {
+        usedGrounding = true;
+        if (Array.isArray(cand.groundingMetadata.groundingChunks)) {
+          sources = cand.groundingMetadata.groundingChunks
+            .filter(c => c && c.web && c.web.uri)
+            .map(c => ({ uri: c.web.uri, title: c.web.title || '' }));
+        }
+      }
+      return { ok: true, text: text ? text.trim() : null, usedGrounding, sources };
     } catch (err) {
       console.error('Gemini request error:', err.message);
-      return { ok: false, status: -1 };
+      return { ok: false, status: -1, usedGrounding: false, sources: [] };
     }
   };
 
@@ -173,18 +249,69 @@ async function callGemini(system, userText, options = {}) {
     const first = await doRequest(payload);
     if (first.ok) {
       await recordGroundingUse();
-      return first.text;
+      return first;
     }
     console.error('Gemini grounding error:', first.status, '; retrying without grounding');
   }
 
-  const second = await doRequest({ ...payload, tools: undefined });
-  return second.ok ? second.text : null;
+  return doRequest({ ...payload, tools: undefined });
+}
+
+async function callGemini(system, userText, options = {}) {
+  const result = await geminiRequest(system, userText, options);
+  return result.text;
+}
+
+// ===== 三層問答流程：知識庫 → 網路搜尋（註明來源） → 忙線＋自動開單 =====
+function normalizeMarker(text) {
+  return String(text || '').replace(/[\s，。！？,.!?、；;:："'「」（）()【】]/g, '').trim();
+}
+
+function stage1Miss(text) {
+  const t = normalizeMarker(text);
+  return t.length < 40 && /無相關資料|沒有相關資料|找不到相關資料|暫無相關資料/.test(t);
+}
+
+function stage2Fail(text) {
+  const t = normalizeMarker(text);
+  return t.length < 40 && /無法回答|不能回答|無答案|未找到答案|沒有找到|無法提供/.test(t);
+}
+
+async function busyReplyText() {
+  const s = await getSettings();
+  const name = String(s.bot_name || '').trim();
+  const base = '抱歉，因忙線中暫時無法回答。您的問題我已記錄，稍後回覆您，請見諒！';
+  return name ? `${base}\n（${name}）` : base;
+}
+
+async function answerQuestion(userText) {
+  // 第 1 層：知識庫（只帶知識庫、不開搜尋；未命中回固定標記「無相關資料」）
+  const entries = await retrieveKnowledge(userText);
+  const stage1System = await buildKnowledgeBase(entries);
+  const stage1 = await geminiRequest(stage1System, userText, { maxOutputTokens: 800 });
+  if (stage1.text && !stage1Miss(stage1.text)) {
+    return { text: stage1.text, tier: 'kb' };
+  }
+
+  // 第 2 層：網路搜尋（知識庫未命中才觸發；結果附註「網路查詢」來源）
+  const stage2System = await buildWebSearchPrompt();
+  const stage2 = await geminiRequest(stage2System, userText, { grounding: true, maxOutputTokens: 800 });
+  if (stage2.text && !stage2Fail(stage2.text)) {
+    let text = stage2.text;
+    if (stage2.usedGrounding) {
+      const url = stage2.sources[0] && stage2.sources[0].uri;
+      text += url ? `\n（資料來源：網路查詢：${url}）` : '\n（資料來源：網路查詢）';
+    }
+    return { text, tier: 'web' };
+  }
+
+  // 第 3 層：忙線訊息（可帶 bot_name 分身署名）
+  return { text: await busyReplyText(), tier: 'busy', unanswered: true };
 }
 
 async function askGemini(userText) {
-  const system = await buildKnowledgeBase();
-  return callGemini(system, userText, { grounding: true });
+  const result = await answerQuestion(userText);
+  return result.text;
 }
 
 async function summarizeMessages(rows, kind) {
@@ -519,8 +646,11 @@ async function handleLineEvent(event) {
     return;
   }
 
-  const answer = await askGemini(text);
-  await replyMessage(event.replyToken, answer || 'AI 助理尚未設定完成，請直接聯絡督導或區會幹事。');
+  const answer = await answerQuestion(text);
+  if (answer.unanswered) {
+    await saveFeedback(null, 'LINE 群組', guessCategory(text), '【AI 未解答】' + text);
+  }
+  await replyMessage(event.replyToken, answer.text || '抱歉，因忙線中暫時無法回答。您的問題我已記錄，稍後回覆您，請見諒！');
 }
 
-module.exports = { verifySignature, handleLineEvent, pushToGroup, pushToUser, pushToLineUser, refreshSourceNames, syncGroupMembers, summarizeMessages, generateAnnouncement, getGroundingUsage, canUseGrounding, recordGroundingUse, recordWebhookDiag };
+module.exports = { verifySignature, handleLineEvent, pushToGroup, pushToUser, pushToLineUser, refreshSourceNames, syncGroupMembers, summarizeMessages, generateAnnouncement, getGroundingUsage, canUseGrounding, recordGroundingUse, recordWebhookDiag, answerQuestion, retrieveKnowledge };

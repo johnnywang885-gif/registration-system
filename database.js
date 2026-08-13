@@ -77,6 +77,14 @@ async function initDatabase() {
       member_count INTEGER,
       last_message_at DATETIME,
       PRIMARY KEY (source_type, source_id)
+    )`,
+    `CREATE TABLE IF NOT EXISTS knowledge (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT NOT NULL,
+      content TEXT NOT NULL,
+      active INTEGER DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`
   ], 'write');
 

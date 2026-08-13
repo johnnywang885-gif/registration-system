@@ -167,6 +167,27 @@
 
         <hr style="margin: 30px 0; border: 1px solid #e0e0e0;">
 
+        <h3 style="margin-bottom: 8px;">AI 知識庫（bot 社務問答）</h3>
+        <p style="font-size: 13px; color: #666; margin-bottom: 16px;">
+          社團在 LINE 群組詢問社務問題時，bot 會優先依此知識庫回答；知識庫找不到會嘗試網路搜尋（並註明「網路查詢資料」）；仍無法回答時回覆「忙線中稍後回覆」並自動記錄於意見回饋，由您接手回覆。
+        </p>
+        <div class="form-group" style="max-width: 520px;">
+          <label>標題（如：113年度社費繳交說明）</label>
+          <input type="text" id="kbTitle" placeholder="輸入標題">
+        </div>
+        <div class="form-group" style="max-width: 520px;">
+          <label>內容</label>
+          <textarea id="kbContent" rows="5" placeholder="輸入社務資料內容，bot 會依此回答社團問題"></textarea>
+        </div>
+        <div class="btn-group">
+          <button class="btn btn-primary" id="kbSubmitBtn" onclick="saveKnowledge()">新增知識</button>
+          <button class="btn btn-secondary" id="kbCancelBtn" style="display:none" onclick="resetKnowledgeForm()">取消編輯</button>
+          <span id="kbMsg" style="margin-left:12px; font-size:13px; color:#4a3728;"></span>
+        </div>
+        <div id="knowledgeList" style="margin-top:16px;"></div>
+
+        <hr style="margin: 30px 0; border: 1px solid #e0e0e0;">
+
         <h3 style="margin-bottom: 16px;">修改管理員密碼</h3>
         <form id="changePasswordForm">
           <div class="form-row">
@@ -347,6 +368,9 @@
         }
         if (tab.dataset.tab === 'linedigest') {
           loadLineSources();
+        }
+        if (tab.dataset.tab === 'settings') {
+          loadKnowledge();
         }
       });
     });
@@ -988,6 +1012,107 @@
         msg.textContent = data.error || '更新失敗';
       }
     });
+
+    // === AI 知識庫 ===
+    let editingKbId = null;
+
+    async function loadKnowledge() {
+      try {
+        const res = await fetch('/api/admin/knowledge', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (!res.ok) return;
+        const rows = await res.json();
+        const list = document.getElementById('knowledgeList');
+        if (!rows.length) {
+          list.innerHTML = '<p style="font-size:13px;color:#999;">尚未新增任何知識資料</p>';
+          return;
+        }
+        list.innerHTML = rows.map(r => `
+          <div style="border:1px solid #e0e0e0;border-radius:8px;padding:12px;margin-bottom:10px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+              <strong style="font-size:14px;color:#4a3728;">${esc(r.title)}</strong>
+              <div style="white-space:nowrap;">
+                <span style="font-size:12px;color:${r.active ? '#4a9e6e' : '#999'};margin-right:8px;">${r.active ? '啟用中' : '已停用'}</span>
+                <button class="btn btn-sm btn-secondary" onclick="toggleKnowledge(${r.id})">${r.active ? '停用' : '啟用'}</button>
+                <button class="btn btn-sm btn-warning" onclick="editKnowledge(${r.id})">編輯</button>
+                <button class="btn btn-sm btn-danger" onclick="deleteKnowledge(${r.id})">刪除</button>
+              </div>
+            </div>
+            <div style="font-size:13px;color:#666;margin-top:6px;white-space:pre-wrap;">${esc(String(r.content).slice(0, 200))}${String(r.content).length > 200 ? '…' : ''}</div>
+          </div>`).join('');
+      } catch (err) {
+        console.error(err);
+      }
+    }
+
+    async function saveKnowledge() {
+      const title = document.getElementById('kbTitle').value.trim();
+      const content = document.getElementById('kbContent').value.trim();
+      const msg = document.getElementById('kbMsg');
+      if (!title || !content) { msg.textContent = '請填寫標題與內容'; return; }
+      const url = editingKbId ? `/api/admin/knowledge/${editingKbId}` : '/api/admin/knowledge';
+      const res = await fetch(url, {
+        method: editingKbId ? 'PUT' : 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ title, content })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        msg.textContent = editingKbId ? '✓ 已更新' : '✓ 已新增';
+        resetKnowledgeForm();
+        loadKnowledge();
+      } else {
+        msg.textContent = data.error || '儲存失敗';
+      }
+    }
+
+    function editKnowledge(id) {
+      fetch('/api/admin/knowledge', { headers: { 'Authorization': `Bearer ${token}` } })
+        .then(r => r.json())
+        .then(list => {
+          const row = list.find(x => x.id === id);
+          if (!row) return;
+          editingKbId = id;
+          document.getElementById('kbTitle').value = row.title;
+          document.getElementById('kbContent').value = row.content;
+          document.getElementById('kbSubmitBtn').textContent = '儲存修改';
+          document.getElementById('kbCancelBtn').style.display = '';
+          document.getElementById('kbMsg').textContent = '';
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        });
+    }
+
+    function resetKnowledgeForm() {
+      editingKbId = null;
+      document.getElementById('kbTitle').value = '';
+      document.getElementById('kbContent').value = '';
+      document.getElementById('kbSubmitBtn').textContent = '新增知識';
+      document.getElementById('kbCancelBtn').style.display = 'none';
+      document.getElementById('kbMsg').textContent = '';
+    }
+
+    async function toggleKnowledge(id) {
+      await fetch(`/api/admin/knowledge/${id}/toggle`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      loadKnowledge();
+    }
+
+    async function deleteKnowledge(id) {
+      if (!confirm('確定要刪除這筆知識資料？')) return;
+      const res = await fetch(`/api/admin/knowledge/${id}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const data = await res.json();
+      toast(data.message || data.error || (res.ok ? '已刪除' : '刪除失敗'), res.ok ? 'success' : 'error');
+      if (res.ok) {
+        if (editingKbId === id) resetKnowledgeForm();
+        loadKnowledge();
+      }
+    }
 
     // === Promotion ===
     async function runPromote() {

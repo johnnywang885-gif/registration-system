@@ -738,6 +738,7 @@ function startServer() {
     const feedback = await getAll("SELECT * FROM feedback");
     const lineMessages = await getAll("SELECT * FROM line_messages");
     const lineSources = await getAll("SELECT * FROM line_sources");
+    const knowledge = await getAll("SELECT * FROM knowledge");
 
     const backup = {
       version: 1,
@@ -748,7 +749,8 @@ function startServer() {
       settings,
       feedback,
       line_messages: lineMessages,
-      line_sources: lineSources
+      line_sources: lineSources,
+      knowledge
     };
 
     const json = JSON.stringify(backup, null, 2);
@@ -775,6 +777,7 @@ function startServer() {
         "DELETE FROM settings",
         "DELETE FROM line_messages",
         "DELETE FROM line_sources",
+        "DELETE FROM knowledge",
         "DELETE FROM clubs WHERE is_admin = 0"
       ], 'write');
 
@@ -835,6 +838,15 @@ function startServer() {
           args: [s.source_type, s.source_id, s.source_name || null, s.member_count || null, s.last_message_at || null]
         }));
         await dbConn.batch(lsStmts, 'write');
+      }
+
+      // Restore knowledge
+      if (backup.knowledge && backup.knowledge.length > 0) {
+        const kbStmts = backup.knowledge.map(k => ({
+          sql: "INSERT OR REPLACE INTO knowledge (id, title, content, active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+          args: [k.id, k.title, k.content, k.active == null ? 1 : k.active, k.created_at || null, k.updated_at || null]
+        }));
+        await dbConn.batch(kbStmts, 'write');
       }
 
       res.json({ message: `還原成功：${backup.clubs.length} 個社團、${backup.registrations.length} 筆報名` });
@@ -972,6 +984,61 @@ function startServer() {
       const ok = await pushToGroup(message);
       if (!ok) return res.status(501).json({ error: 'LINE 尚未設定（缺少環境變數或 bot 尚未加入群組）' });
       res.json({ message: '已推播到 LINE 群組' });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ===== AI 知識庫（bot 社務問答資料；掛 settings 權限） =====
+  app.get('/api/admin/knowledge', authMiddleware, requirePerm('settings'), async (req, res) => {
+    try {
+      const rows = await getAll("SELECT id, title, content, active, created_at, updated_at FROM knowledge ORDER BY updated_at DESC, id DESC");
+      res.json(rows);
+    } catch (err) {
+      res.status(500).json({ error: '載入失敗' });
+    }
+  });
+
+  app.post('/api/admin/knowledge', authMiddleware, requirePerm('settings'), async (req, res) => {
+    try {
+      const title = String((req.body && req.body.title) || '').trim();
+      const content = String((req.body && req.body.content) || '').trim();
+      if (!title || !content) return res.status(400).json({ error: '標題與內容皆必填' });
+      const id = await insert("INSERT INTO knowledge (title, content) VALUES (?, ?)", [title, content]);
+      res.json({ message: '已新增知識', id });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.put('/api/admin/knowledge/:id', authMiddleware, requirePerm('settings'), async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const title = String((req.body && req.body.title) || '').trim();
+      const content = String((req.body && req.body.content) || '').trim();
+      if (!title || !content) return res.status(400).json({ error: '標題與內容皆必填' });
+      await runQuery("UPDATE knowledge SET title = ?, content = ?, updated_at = datetime('now') WHERE id = ?", [title, content, id]);
+      res.json({ message: '已更新知識' });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/admin/knowledge/:id/toggle', authMiddleware, requirePerm('settings'), async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      await runQuery("UPDATE knowledge SET active = 1 - active, updated_at = datetime('now') WHERE id = ?", [id]);
+      res.json({ message: '已更新' });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.delete('/api/admin/knowledge/:id', authMiddleware, requirePerm('settings'), async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      await runQuery("DELETE FROM knowledge WHERE id = ?", [id]);
+      res.json({ message: '已刪除知識' });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
