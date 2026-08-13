@@ -184,6 +184,14 @@
           <button class="btn btn-secondary" id="kbCancelBtn" style="display:none" onclick="resetKnowledgeForm()">取消編輯</button>
           <span id="kbMsg" style="margin-left:12px; font-size:13px; color:#4a3728;"></span>
         </div>
+        <div class="form-group" style="max-width: 520px; margin-top: 14px;">
+          <label>上傳文書檔案（Word/Excel/PDF/TXT，可多選，每檔 ≤10MB；bot 會自動判讀內容，超過 2500 字自動分段）</label>
+          <input type="file" id="kbFiles" accept=".pdf,.docx,.xls,.xlsx,.txt" multiple>
+        </div>
+        <div class="btn-group">
+          <button class="btn btn-success" onclick="uploadKnowledgeFiles()">上傳並匯入知識</button>
+          <span id="kbUploadMsg" style="margin-left:12px; font-size:13px; color:#4a3728;"></span>
+        </div>
         <div id="knowledgeList" style="margin-top:16px;"></div>
 
         <hr style="margin: 30px 0; border: 1px solid #e0e0e0;">
@@ -1111,6 +1119,28 @@
       if (res.ok) {
         if (editingKbId === id) resetKnowledgeForm();
         loadKnowledge();
+      }
+    }
+
+    async function uploadKnowledgeFiles() {
+      const input = document.getElementById('kbFiles');
+      const msg = document.getElementById('kbUploadMsg');
+      if (!input.files.length) { msg.textContent = '請先選擇檔案'; return; }
+      const fd = new FormData();
+      for (const f of input.files) fd.append('files', f);
+      msg.textContent = '上傳判讀中，請稍候...';
+      try {
+        const res = await fetch('/api/admin/knowledge/upload', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}` },
+          body: fd
+        });
+        const data = await res.json();
+        msg.textContent = data.message || data.error || (res.ok ? '匯入完成' : '匯入失敗');
+        input.value = '';
+        if (res.ok) loadKnowledge();
+      } catch (err) {
+        msg.textContent = '上傳失敗：' + err.message;
       }
     }
 

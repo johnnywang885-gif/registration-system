@@ -30,6 +30,7 @@ No lint, typecheck, or test scripts exist. This is a plain JS project with no bu
 - `review_e_line_digest.js` — boots real server on PORT 34895, seeds `line_sources`/`line_messages`, then exercises the LINE 彙整 stack over HTTP: sources list w/ message counts, empty-range 400, digest (200+digest with a real `GEMINI_API_KEY`, else graceful 500), line-send 501 without LINE config, source-name refresh (0 updated without token).
 - `review_f_announce.js` — boots real server on PORT 34897, seeds `line_sources` (主群/各社群/個別社), then exercises the AI 公告 stack over HTTP: generate 400 without raw, generate (200+broadcast+perClub with a real `GEMINI_API_KEY`, else graceful 500), match 社號/社名 → line_sources (群組優先排序；無比對回空), send clubs per-item failures don't break the batch (200 + delivered/failed), send group 501 without LINE config. Also covers the grounding usage counter (`GEMINI_GROUNDING=on` + max 4800): used=4800 → 停用, used=4700 → 啟用, `recordGroundingUse()` → 4701.
 - `review_g_knowledge.js` — boots real server on PORT 34899, exercises the AI 知識庫 stack over HTTP + direct calls: knowledge CRUD (add/update/toggle/delete), `retrieveKnowledge()` 檢索計分（啟用中才撈得到、相關度排序、無關查詢回空）、三層問答流程（無 `GEMINI_API_KEY` 時確定性走 busy 分支：tier=busy + 分身署名 `bot_name` + 自動開 feedback 單「【AI 未解答】」）、backup 含 `knowledge` 節。
+- `review_h_doc_import.js` — boots real server on PORT 34898, exercises the 文書上傳匯入 stack over HTTP: 上傳 Excel（xlsx lib 生成、多工作表各一筆＋儲存格文字）、TXT、DOCX（docx 包生成 fixture）、手刻最小 PDF → 各建立知識列；不支援格式（.doc）/空白檔 → 200 + failed 細節（訊息含「不支援」「判讀」）；>2500 字自動分段（段落 n/m 標題）；backup 含全部上傳知識列；`retrieveKnowledge()` 撈得到上傳內容（中文檔名 mojibake 還原由此測試守護）。
 - `sim_phase2_144_30.js` — boots real server on PORT 34893; scenario simulation (Phase 1: 144 paid + paid-club standby; Phase 2: 30 incl. those standby) printing per-club tables. Reuse as a template for "what if" simulations.
 - `sim_185_30.js` — boots real server on PORT 34904; scenario simulation (185 Phase-1 registrations incl. 5 big clubs over the 10-seat guarantee → 50 unpaid forfeits → 30 Phase-2 registrations) and keeps the DB alive for browser verification. Reuse as template too.
 - `sim_frontend_boot.js` — boots real server on PORT 34900, seeds clubs 2401/2402, then stays alive (`setInterval`) for manual/browser frontend testing. **Use this instead of `npm start` when you need a running server for MCP browser work.**
@@ -72,7 +73,7 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 - `line_messages` — LINE 對話紀錄（`source_type` group/user、`source_id` groupId|userId、`sender_id`、`message`、`created_at`，UTC datetime）；bot 收到每則文字訊息即 INSERT
 - `line_sources` — LINE 來源清單（PK `(source_type, source_id)`），每個 LINE 事件即時 `ON CONFLICT ... DO UPDATE` 更新 `last_message_at`（upsert 不可用 `INSERT OR REPLACE`，會清掉名稱欄位）；`source_name`/`member_count` 由管理員在後台按「重新整理名稱」補抓（群組→`GET /v2/bot/group/{id}/summary`、用戶→`GET /v2/bot/profile/{id}`），失敗保留原值
 - 兩表皆納入 backup/restore JSON（`line_messages`/`line_sources` 節）
-- `knowledge` — AI 知識庫（`title`/`content`/`active` 啟用開關/時間戳），管理後台「系統設定」tab 貼文或貼上內容建立，bot 問答第 1 層優先依此回答；納入 backup/restore（`knowledge` 節）
+- `knowledge` — AI 知識庫（`title`/`content`/`active` 啟用開關/時間戳），管理後台「系統設定」tab 貼文、貼上內容或**上傳文書檔案**（.pdf/.docx/.xls/.xlsx/.txt，`knowledge_import.js` 抽取文字，>2500 字自動分段為多筆，Excel 逐工作表一筆，中文檔名自動還原 busboy mojibake）建立，bot 問答第 1 層優先依此回答；納入 backup/restore（`knowledge` 節）
 
 ### Registration Status Flow
 - `registered` → default status when a club member registers (occupies a seat)
@@ -207,6 +208,7 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 - `GET /api/admin/feedback` / `PUT /api/admin/feedback/:id` — list (open first, newest first) / toggle open↔done (admin only)
 - `POST /api/admin/line-announce` — push a message to the LINE group the bot joined (admin only; 501 if LINE not configured)
 - `GET /api/admin/knowledge` / `POST /api/admin/knowledge` / `PUT /api/admin/knowledge/:id` / `POST /api/admin/knowledge/:id/toggle` / `DELETE /api/admin/knowledge/:id` — AI 知識庫 CRUD（bot 問答第 1 層資料，admin only; toggle 切換啟用/停用）
+- `POST /api/admin/knowledge/upload` — 上傳文書檔案建知識（admin only; multipart `files` 欄位多選 ≤5 檔、每檔 ≤10MB；支援 .pdf/.docx/.xls/.xlsx/.txt，`knowledge_import.js` 抽取文字、>2500 字自動分段多筆、Excel 逐工作表一筆；單檔失敗不中斷其餘，200 + `details` 逐檔回報；掃描 PDF/空白檔回 failed 細節）
 - `GET /api/admin/line-sources` — list LINE 彙整 sources (`line_sources` + per-source message counts; admin only)
 - `GET /api/admin/line-diag` — webhook 送達診斷（admin；`recordWebhookDiag()` 在每次 webhook POST 把計數寫進 settings：`webhook_pings`/`webhook_events`/`webhook_rejected`/`webhook_last_at`/`webhook_last_types`/`webhook_last_sources`，另有 `line_group_id`），回應含 `line_sources`/`line_messages` 筆數；UI 在 LINE 彙整 tab「Webhook 診斷」按鈕——測試法：記下收件總數→群組傳訊息→再查，數字不動代表 LINE 主控台沒把事件送到本系統（查「使用 Webhook」開關/URL）
 - `POST /api/admin/line-sources/refresh` — re-fetch source names from LINE (group summary / profile APIs) **並且同步群組全部成員進 `line_sources`（＝announce/sync）**（admin only; failures keep old values）
@@ -300,6 +302,7 @@ server.js        — Express app + all routes (startServer is sync, not async)
 database.js      — Turso cloud operations (@libsql/client), db starts as null
 deadlines.js     — date-driven phase state machine + auto promote/forfeit (enforceDeadlines middleware, non-blocking with debounce)
 linebot.js       — LINE Messaging API integration (signature verify, AI reply, feedback logging, group push)
+knowledge_import.js — 知識庫文書抽取（txt/pdf-parse/docx-mammoth/xlsx-SheetJS）、大檔分段、中文檔名 mojibake 還原
 auth.js          — JWT auth middleware
 public/          — Frontend HTML files
 public/css/      — Shared styles (style.css + guide.css)

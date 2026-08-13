@@ -11,6 +11,7 @@ const { initDatabase, getAll, getOne, runQuery, insert, importClubs, saveDatabas
 const { generateToken, authMiddleware, anyAdminMiddleware, adminMiddleware, requirePerm, getAdminPerms, ADMIN_PERMS } = require('./auth');
 const { taipeiToday, phaseState, getSettings, occupancy, promoteStandby, forfeitUnpaidByPhase, runEnforcement, enforceDeadlines } = require('./deadlines');
 const { verifySignature, handleLineEvent, pushToGroup, pushToUser, pushToLineUser, refreshSourceNames, syncGroupMembers, summarizeMessages, generateAnnouncement, recordWebhookDiag } = require('./linebot');
+const { parseUploadedFile, fixFilename } = require('./knowledge_import');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -50,6 +51,12 @@ const upload = multer({
       cb(new Error('不支援的檔案格式，僅支援 JPG/PNG/GIF/PDF'));
     }
   }
+});
+
+// 知識庫文書上傳：memory storage（不落盤，抽取文字後直接進 knowledge 表）
+const uploadKnowledgeMemory = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024, files: 5 }
 });
 
 function startServer() {
@@ -1041,6 +1048,35 @@ function startServer() {
       res.json({ message: '已刪除知識' });
     } catch (err) {
       res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 上傳文書檔案（Word/Excel/PDF/TXT）→ 抽取文字 → 分段寫入 knowledge 表
+  app.post('/api/admin/knowledge/upload', authMiddleware, requirePerm('settings'), uploadKnowledgeMemory.array('files', 5), async (req, res) => {
+    try {
+      const files = req.files || [];
+      if (!files.length) return res.status(400).json({ error: '請選擇要上傳的檔案' });
+      const results = [];
+      const stmts = [];
+      for (const f of files) {
+        try {
+          const entries = await parseUploadedFile(fixFilename(f.originalname), f.buffer);
+          for (const e of entries) {
+            stmts.push({ sql: "INSERT INTO knowledge (title, content) VALUES (?, ?)", args: [e.title, e.content] });
+          }
+          results.push({ file: f.originalname, ok: true, entries: entries.length });
+        } catch (err) {
+          results.push({ file: f.originalname, ok: false, error: err.message });
+        }
+      }
+      if (stmts.length) await getDb().batch(stmts, 'write');
+      const failed = results.filter(r => !r.ok);
+      const message = failed.length
+        ? `已匯入 ${stmts.length} 筆知識，${failed.length} 個檔案失敗：${failed.map(f => `${f.file}（${f.error}）`).join('；')}`
+        : `已匯入 ${stmts.length} 筆知識`;
+      res.json({ message, total: stmts.length, failed: failed.length, details: results });
+    } catch (err) {
+      res.status(500).json({ error: '匯入失敗: ' + err.message });
     }
   });
 
