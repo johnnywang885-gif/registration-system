@@ -76,7 +76,7 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 - `line_messages` — LINE 對話紀錄（`source_type` group/user、`source_id` groupId|userId、`sender_id`、`message`、`created_at`，UTC datetime）；bot 收到每則文字訊息即 INSERT
 - `line_sources` — LINE 來源清單（PK `(source_type, source_id)`），每個 LINE 事件即時 `ON CONFLICT ... DO UPDATE` 更新 `last_message_at`（upsert 不可用 `INSERT OR REPLACE`，會清掉名稱欄位）；`source_name`/`member_count` 由管理員在後台按「重新整理名稱」補抓（群組→`GET /v2/bot/group/{id}/summary`、用戶→`GET /v2/bot/profile/{id}`），失敗保留原值
 - 兩表皆納入 backup/restore JSON（`line_messages`/`line_sources` 節）
-- `knowledge` — AI 知識庫（`title`/`content`/`active` 啟用開關/時間戳），管理後台「系統設定」tab 貼文、貼上內容或**上傳文書檔案**（.pdf/.docx/.xls/.xlsx/.txt，`knowledge_import.js` 抽取文字，>2500 字自動分段為多筆，Excel 逐工作表一筆，中文檔名自動還原 busboy mojibake）建立，bot 問答第 1 層優先依此回答；納入 backup/restore（`knowledge` 節）
+- `knowledge` — AI 知識庫（`title`/`content`/`active` 啟用開關/時間戳/`source_file` 來源檔名），管理後台「系統設定」tab 貼文、貼上內容或**上傳文書檔案**（.pdf/.docx/.xls/.xlsx/.txt，`knowledge_import.js` 抽取文字，>2500 字自動分段為多筆，Excel 逐工作表一筆，中文檔名自動還原 busboy mojibake）建立，bot 問答第 1 層優先依此回答；上傳建立的列以 `source_file` 記原檔名（手動新增為 NULL），後台知識列表依檔案分組顯示檔名並可整檔刪除（`DELETE` 全部段落/工作表）；納入 backup/restore（`knowledge` 節，含 `source_file`）
 
 ### Registration Status Flow
 - `registered` → default status when a club member registers (occupies a seat)
@@ -213,7 +213,8 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 - `GET /api/admin/feedback` / `PUT /api/admin/feedback/:id` — list (open first, newest first) / toggle open↔done (admin only)
 - `POST /api/admin/line-announce` — push a message to the LINE group the bot joined (admin only; 501 if LINE not configured)
 - `GET /api/admin/knowledge` / `POST /api/admin/knowledge` / `PUT /api/admin/knowledge/:id` / `POST /api/admin/knowledge/:id/toggle` / `DELETE /api/admin/knowledge/:id` — AI 知識庫 CRUD（bot 問答第 1 層資料，admin only; toggle 切換啟用/停用）
-- `POST /api/admin/knowledge/upload` — 上傳文書檔案建知識（admin only; multipart `files` 欄位多選 ≤5 檔、每檔 ≤20MB；支援 .pdf/.docx/.xls/.xlsx/.txt，`knowledge_import.js` 抽取文字、>2500 字自動分段多筆、Excel 逐工作表一筆；單檔失敗不中斷其餘，200 + `details` 逐檔回報；掃描 PDF/空白檔回 failed 細節）
+- `POST /api/admin/knowledge/upload` — 上傳文書檔案建知識（admin only; multipart `files` 欄位多選 ≤5 檔、每檔 ≤20MB；支援 .pdf/.docx/.xls/.xlsx/.txt，`knowledge_import.js` 抽取文字、>2500 字自動分段多筆、Excel 逐工作表一筆；單檔失敗不中斷其餘，200 + `details` 逐檔回報；掃描 PDF/空白檔回 failed 細節；單檔文字 >200,000 字截斷；成功列以 `source_file` 記原檔名）
+- `POST /api/admin/knowledge/delete-file` — 依 `source_file` 整檔刪除（admin only; body `filename`；一次清掉該檔產生的全部段落/工作表知識）
 - `GET /api/admin/line-sources` — list LINE 彙整 sources (`line_sources` + per-source message counts; admin only)
 - `GET /api/admin/line-diag` — webhook 送達診斷（admin；`recordWebhookDiag()` 在每次 webhook POST 把計數寫進 settings：`webhook_pings`/`webhook_events`/`webhook_rejected`/`webhook_last_at`/`webhook_last_types`/`webhook_last_sources`，另有 `line_group_id`），回應含 `line_sources`/`line_messages` 筆數；UI 在 LINE 彙整 tab「Webhook 診斷」按鈕——測試法：記下收件總數→群組傳訊息→再查，數字不動代表 LINE 主控台沒把事件送到本系統（查「使用 Webhook」開關/URL）
 - `POST /api/admin/line-sources/refresh` — re-fetch source names from LINE (group summary / profile APIs) **並且同步群組全部成員進 `line_sources`（＝announce/sync）**（admin only; failures keep old values）

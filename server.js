@@ -850,8 +850,8 @@ function startServer() {
       // Restore knowledge
       if (backup.knowledge && backup.knowledge.length > 0) {
         const kbStmts = backup.knowledge.map(k => ({
-          sql: "INSERT OR REPLACE INTO knowledge (id, title, content, active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-          args: [k.id, k.title, k.content, k.active == null ? 1 : k.active, k.created_at || null, k.updated_at || null]
+          sql: "INSERT OR REPLACE INTO knowledge (id, title, content, active, created_at, updated_at, source_file) VALUES (?, ?, ?, ?, ?, ?, ?)",
+          args: [k.id, k.title, k.content, k.active == null ? 1 : k.active, k.created_at || null, k.updated_at || null, k.source_file || null]
         }));
         await dbConn.batch(kbStmts, 'write');
       }
@@ -999,7 +999,7 @@ function startServer() {
   // ===== AI 知識庫（bot 社務問答資料；掛 settings 權限） =====
   app.get('/api/admin/knowledge', authMiddleware, requirePerm('settings'), async (req, res) => {
     try {
-      const rows = await getAll("SELECT id, title, content, active, created_at, updated_at FROM knowledge ORDER BY updated_at DESC, id DESC");
+      const rows = await getAll("SELECT id, title, content, active, created_at, updated_at, source_file FROM knowledge ORDER BY updated_at DESC, id DESC");
       res.json(rows);
     } catch (err) {
       res.status(500).json({ error: '載入失敗' });
@@ -1071,9 +1071,10 @@ function startServer() {
       const stmts = [];
       for (const f of files) {
         try {
-          const entries = await parseUploadedFile(fixFilename(f.originalname), f.buffer);
+          const srcFile = fixFilename(f.originalname);
+          const entries = await parseUploadedFile(srcFile, f.buffer);
           for (const e of entries) {
-            stmts.push({ sql: "INSERT INTO knowledge (title, content) VALUES (?, ?)", args: [e.title, e.content] });
+            stmts.push({ sql: "INSERT INTO knowledge (title, content, source_file) VALUES (?, ?, ?)", args: [e.title, e.content, srcFile] });
           }
           results.push({ file: f.originalname, ok: true, entries: entries.length });
         } catch (err) {
@@ -1088,6 +1089,21 @@ function startServer() {
       res.json({ message, total: stmts.length, failed: failed.length, details: results });
     } catch (err) {
       res.status(500).json({ error: '匯入失敗: ' + err.message });
+    }
+  });
+
+  // 整檔刪除：依 source_file 移除某個上傳檔案產生的全部知識（段落/工作表一併清除）
+  app.post('/api/admin/knowledge/delete-file', authMiddleware, requirePerm('settings'), async (req, res) => {
+    try {
+      const filename = String((req.body && req.body.filename) || '').trim();
+      if (!filename) return res.status(400).json({ error: '缺少檔案名稱' });
+      const result = await getDb().execute({
+        sql: "DELETE FROM knowledge WHERE source_file = ?",
+        args: [filename]
+      });
+      res.json({ message: `已刪除檔案「${filename}」及其 ${result.rowsAffected} 筆知識` });
+    } catch (err) {
+      res.status(500).json({ error: '刪除失敗: ' + err.message });
     }
   });
 

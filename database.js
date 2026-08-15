@@ -84,12 +84,16 @@ async function initDatabase() {
       content TEXT NOT NULL,
       active INTEGER DEFAULT 1,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      source_file TEXT
     )`
   ], 'write');
 
   // Migration: add admin_perms column (次管理者權限 JSON 陣列；NULL = 一般社團)
   await ensureAdminPermsColumn();
+
+  // Migration: add source_file column (知識來源上傳檔名；NULL = 手動新增)
+  await ensureKnowledgeSourceFileColumn();
 
   // Create default admin if not exists
   const adminCheck = await db.execute("SELECT COUNT(*) as cnt FROM clubs WHERE is_admin = 1");
@@ -163,6 +167,17 @@ async function ensureAdminPermsColumn() {
   }
 }
 
+// 冪等確認 knowledge.source_file 欄位存在（記錄知識來源檔名，供整檔刪除）
+async function ensureKnowledgeSourceFileColumn() {
+  if (!db) throw new Error('Database not connected');
+  try {
+    await db.execute("ALTER TABLE knowledge ADD COLUMN source_file TEXT");
+    console.log('Migration: knowledge.source_file 欄位已新增');
+  } catch (err) {
+    // column already exists — ignore
+  }
+}
+
 async function importClubs(clubsData) {
   const stmts = clubsData.map(club => {
     const defaultPwd = String(club.club_id).slice(-4);
@@ -188,5 +203,6 @@ module.exports = {
   getOne,
   insert,
   importClubs,
-  ensureAdminPermsColumn
+  ensureAdminPermsColumn,
+  ensureKnowledgeSourceFileColumn
 };
