@@ -1057,18 +1057,24 @@
             </div>
             <div style="font-size:13px;color:#666;margin-top:6px;white-space:pre-wrap;">${esc(String(r.content).slice(0, 200))}${String(r.content).length > 200 ? '…' : ''}</div>`;
         let html = '';
+        let fileIdx = 0;
         for (const [file, items] of Object.entries(files)) {
+          const expanded = items.length <= 1;
           html += `
             <div style="border:1px solid #e0e0e0;border-radius:8px;padding:12px;margin-bottom:10px;">
               <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;border-bottom:1px dashed #e0e0e0;padding-bottom:8px;margin-bottom:8px;">
                 <strong style="font-size:14px;color:#4a3728;">檔案：${esc(file)}</strong>
                 <div style="white-space:nowrap;">
                   <span style="font-size:12px;color:#999;margin-right:8px;">${items.length} 筆</span>
+                  <button class="btn btn-sm btn-secondary" onclick="toggleKbFile(this, ${fileIdx})" data-n="${items.length}">${expanded ? '收合' : `展開 ${items.length} 筆`}</button>
                   <button class="btn btn-sm btn-danger" onclick="deleteKnowledgeFile(this)" data-f="${esc(file)}">刪除整檔</button>
                 </div>
               </div>
-              ${items.map(rowHtml).join('<div style="border-top:1px solid #f0f0f0;margin:8px 0;"></div>')}
+              <div id="kbFile${fileIdx}" style="${expanded ? '' : 'display:none;'}">
+                ${items.map(rowHtml).join('<div style="border-top:1px solid #f0f0f0;margin:8px 0;"></div>')}
+              </div>
             </div>`;
+          fileIdx++;
         }
         html += manual.map(r => `<div style="border:1px solid #e0e0e0;border-radius:8px;padding:12px;margin-bottom:10px;">${rowHtml(r)}</div>`).join('');
         list.innerHTML = html;
@@ -1157,6 +1163,14 @@
       const data = await res.json();
       toast(data.message || data.error || (res.ok ? '已刪除' : '刪除失敗'), res.ok ? 'success' : 'error');
       if (res.ok) loadKnowledge();
+    }
+
+    function toggleKbFile(btn, idx) {
+      const box = document.getElementById('kbFile' + idx);
+      if (!box) return;
+      const collapsed = box.style.display === 'none';
+      box.style.display = collapsed ? '' : 'none';
+      btn.textContent = collapsed ? '收合' : `展開 ${btn.dataset.n} 筆`;
     }
 
     async function uploadKnowledgeFiles() {
