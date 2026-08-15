@@ -3,7 +3,7 @@ const mammoth = require('mammoth');
 const XLSX = require('xlsx');
 const { PDFParse } = require('pdf-parse');
 
-const MAX_TOTAL_CHARS = 60000;
+const MAX_TOTAL_CHARS = 200000;
 const SEGMENT_CHARS = 2500;
 
 function normalizeText(text) {
