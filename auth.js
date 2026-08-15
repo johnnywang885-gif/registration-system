@@ -2,8 +2,13 @@ const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const { getOne } = require('./database');
 
+// 記憶化：JWT_SECRET 未設定時，第一次呼叫即生成並快取，之後沿用同一把
+// （避免每次呼叫 randomBytes 產生不同 secret，導致 token 簽發後無法驗證）
+let cachedSecret = null;
 function getSecret() {
-  return process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
+  if (process.env.JWT_SECRET) return process.env.JWT_SECRET;
+  if (!cachedSecret) cachedSecret = crypto.randomBytes(32).toString('hex');
+  return cachedSecret;
 }
 if (!process.env.JWT_SECRET) {
   console.log('JWT_SECRET 未設定，啟動時將自動生成並持久化到資料庫。');

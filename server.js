@@ -28,6 +28,15 @@ const loginLimiter = rateLimit({
   message: { error: '嘗試次數過多，請 15 分鐘後再試' }
 });
 
+// LINE webhook 防灌水（LINE 正常傳送不會達到此量級；超限時 LINE 會自行重試）
+const webhookLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 600,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: '請求過於頻繁' }
+});
+
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     const dir = path.join(__dirname, 'uploads', 'payments');
@@ -358,26 +367,45 @@ function startServer() {
   });
 
   // ===== Payment Proof API =====
-  app.post('/api/payment/upload', authMiddleware, upload.single('file'), async (req, res) => {
-    if (!req.file) return res.status(400).json({ error: '請選擇檔案' });
+  app.post('/api/payment/upload', authMiddleware, (req, res, next) => {
+    upload.single('file')(req, res, (err) => {
+      if (err) {
+        if (err.code === 'LIMIT_FILE_SIZE') return res.status(400).json({ error: '檔案過大：單檔不可超過 10MB' });
+        console.error('Payment upload multer error:', err);
+        return res.status(400).json({ error: String(err.message).includes('不支援') ? err.message : '上傳失敗：' + err.message });
+      }
+      next();
+    });
+  }, async (req, res) => {
+    try {
+      if (!req.file) return res.status(400).json({ error: '請選擇檔案' });
 
-    const { registration_id } = req.body;
-    const fileType = req.file.mimetype === 'application/pdf' ? 'pdf' : 'image';
+      const { registration_id } = req.body;
+      const fileType = req.file.mimetype === 'application/pdf' ? 'pdf' : 'image';
 
-    const id = await insert(
-      "INSERT INTO payment_proofs (registration_id, club_id, file_path, file_type, file_name) VALUES (?, ?, ?, ?, ?)",
-      [registration_id || null, req.user.clubId, `/uploads/payments/${req.file.filename}`, fileType, req.file.originalname]
-    );
+      const id = await insert(
+        "INSERT INTO payment_proofs (registration_id, club_id, file_path, file_type, file_name) VALUES (?, ?, ?, ?, ?)",
+        [registration_id || null, req.user.clubId, `/uploads/payments/${req.file.filename}`, fileType, req.file.originalname]
+      );
 
-    res.json({ id, message: '上傳成功', filePath: `/uploads/payments/${req.file.filename}` });
+      res.json({ id, message: '上傳成功', filePath: `/uploads/payments/${req.file.filename}` });
+    } catch (err) {
+      console.error('Payment upload error:', err.message);
+      res.status(500).json({ error: '上傳失敗，請稍後再試' });
+    }
   });
 
   app.get('/api/payment/my-uploads', authMiddleware, async (req, res) => {
-    const uploads = await getAll(
-      "SELECT * FROM payment_proofs WHERE club_id = ? ORDER BY uploaded_at DESC",
-      [req.user.clubId]
-    );
-    res.json(uploads);
+    try {
+      const uploads = await getAll(
+        "SELECT * FROM payment_proofs WHERE club_id = ? ORDER BY uploaded_at DESC",
+        [req.user.clubId]
+      );
+      res.json(uploads);
+    } catch (err) {
+      console.error('My uploads error:', err.message);
+      res.status(500).json({ error: '載入失敗' });
+    }
   });
 
   app.get('/api/payment/file/:id', authMiddleware, async (req, res) => {
@@ -401,22 +429,27 @@ function startServer() {
 
   // ===== Admin API =====
   app.get('/api/admin/all', authMiddleware, requirePerm('registrations'), async (req, res) => {
-    const { club_id, phase, status } = req.query;
-    let sql = `
-      SELECT r.*, c.club_name
-      FROM registrations r
-      JOIN clubs c ON r.club_id = c.club_id
-      WHERE 1=1
-    `;
-    const params = [];
+    try {
+      const { club_id, phase, status } = req.query;
+      let sql = `
+        SELECT r.*, c.club_name
+        FROM registrations r
+        JOIN clubs c ON r.club_id = c.club_id
+        WHERE 1=1
+      `;
+      const params = [];
 
-    if (club_id) { sql += " AND r.club_id = ?"; params.push(parseInt(club_id)); }
-    if (phase) { sql += " AND r.phase = ?"; params.push(parseInt(phase)); }
-    if (status) { sql += " AND r.status = ?"; params.push(status); }
+      if (club_id) { sql += " AND r.club_id = ?"; params.push(parseInt(club_id)); }
+      if (phase) { sql += " AND r.phase = ?"; params.push(parseInt(phase)); }
+      if (status) { sql += " AND r.status = ?"; params.push(status); }
 
-    sql += " ORDER BY r.club_id, r.created_at";
-    const registrations = await getAll(sql, params);
-    res.json(registrations);
+      sql += " ORDER BY r.club_id, r.created_at";
+      const registrations = await getAll(sql, params);
+      res.json(registrations);
+    } catch (err) {
+      console.error('Admin all error:', err.message);
+      res.status(500).json({ error: '載入失敗' });
+    }
   });
 
   app.put('/api/admin/payment/:id', authMiddleware, requirePerm('registrations'), async (req, res) => {
@@ -532,94 +565,134 @@ function startServer() {
 
   // Payment proof review
   app.get('/api/payment/all', authMiddleware, requirePerm('payments'), async (req, res) => {
-    const proofs = await getAll(`
-      SELECT p.*, c.club_name
-      FROM payment_proofs p
-      JOIN clubs c ON p.club_id = c.club_id
-      ORDER BY p.uploaded_at DESC
-    `);
-    res.json(proofs);
+    try {
+      const proofs = await getAll(`
+        SELECT p.*, c.club_name
+        FROM payment_proofs p
+        JOIN clubs c ON p.club_id = c.club_id
+        ORDER BY p.uploaded_at DESC
+      `);
+      res.json(proofs);
+    } catch (err) {
+      console.error('Payment all error:', err.message);
+      res.status(500).json({ error: '載入失敗' });
+    }
   });
 
   app.put('/api/payment/review/:id', authMiddleware, requirePerm('payments'), async (req, res) => {
-    const { action } = req.body;
-    const newStatus = action === 'approve' ? 'approved' : 'rejected';
-    await runQuery(
-      "UPDATE payment_proofs SET status = ?, reviewed_by = ?, reviewed_at = datetime('now') WHERE id = ?",
-      [newStatus, req.user.clubId.toString(), req.params.id]
-    );
+    try {
+      const { action } = req.body;
+      const newStatus = action === 'approve' ? 'approved' : 'rejected';
+      await runQuery(
+        "UPDATE payment_proofs SET status = ?, reviewed_by = ?, reviewed_at = datetime('now') WHERE id = ?",
+        [newStatus, req.user.clubId.toString(), req.params.id]
+      );
 
-    const proof = await getOne("SELECT * FROM payment_proofs WHERE id = ?", [req.params.id]);
+      const proof = await getOne("SELECT * FROM payment_proofs WHERE id = ?", [req.params.id]);
 
-    if (action === 'approve') {
-      if (proof) {
-        await runQuery(
-          "UPDATE registrations SET status = 'paid' WHERE club_id = ? AND status = 'registered'",
-          [proof.club_id]
-        );
+      if (action === 'approve') {
+        if (proof) {
+          await runQuery(
+            "UPDATE registrations SET status = 'paid' WHERE club_id = ? AND status = 'registered'",
+            [proof.club_id]
+          );
+        }
       }
-    }
 
-    res.json({ message: action === 'approve' ? '已確認繳費' : '已駁回' });
+      res.json({ message: action === 'approve' ? '已確認繳費' : '已駁回' });
+    } catch (err) {
+      console.error('Payment review error:', err.message);
+      res.status(500).json({ error: '操作失敗，請稍後再試' });
+    }
   });
 
   app.put('/api/payment/reset/:id', authMiddleware, requirePerm('payments'), async (req, res) => {
-    const proof = await getOne("SELECT * FROM payment_proofs WHERE id = ?", [req.params.id]);
-    if (!proof) return res.status(404).json({ error: '繳費證明不存在' });
+    try {
+      const proof = await getOne("SELECT * FROM payment_proofs WHERE id = ?", [req.params.id]);
+      if (!proof) return res.status(404).json({ error: '繳費證明不存在' });
 
-    await runQuery(
-      "UPDATE payment_proofs SET status = 'pending', reviewed_by = NULL, reviewed_at = NULL WHERE id = ?",
-      [req.params.id]
-    );
+      await runQuery(
+        "UPDATE payment_proofs SET status = 'pending', reviewed_by = NULL, reviewed_at = NULL WHERE id = ?",
+        [req.params.id]
+      );
 
-    await runQuery(
-      "UPDATE registrations SET status = 'registered' WHERE club_id = ? AND status = 'paid' AND created_at <= ?",
-      [proof.club_id, proof.uploaded_at]
-    );
+      await runQuery(
+        "UPDATE registrations SET status = 'registered' WHERE club_id = ? AND status = 'paid' AND created_at <= ?",
+        [proof.club_id, proof.uploaded_at]
+      );
 
-    res.json({ message: '已重設為待審核' });
+      res.json({ message: '已重設為待審核' });
+    } catch (err) {
+      console.error('Payment reset error:', err.message);
+      res.status(500).json({ error: '操作失敗，請稍後再試' });
+    }
   });
 
   // Club management
   app.get('/api/admin/clubs', authMiddleware, anyAdminMiddleware, async (req, res) => {
-    let clubs = await getAll("SELECT club_id, club_name, is_admin, admin_perms FROM clubs ORDER BY club_id");
-    // 次管理者不需看到 admin_perms（權限僅由系統管理員管理）
-    const isSuper = req.user.superAdmin === true || !Array.isArray(req.user.perms);
-    if (!isSuper) {
-      clubs = clubs.map(c => ({ club_id: c.club_id, club_name: c.club_name, is_admin: c.is_admin }));
+    try {
+      let clubs = await getAll("SELECT club_id, club_name, is_admin, admin_perms FROM clubs ORDER BY club_id");
+      // 次管理者不需看到 admin_perms（權限僅由系統管理員管理）
+      const isSuper = req.user.superAdmin === true || !Array.isArray(req.user.perms);
+      if (!isSuper) {
+        clubs = clubs.map(c => ({ club_id: c.club_id, club_name: c.club_name, is_admin: c.is_admin }));
+      }
+      res.json(clubs);
+    } catch (err) {
+      console.error('Clubs list error:', err.message);
+      res.status(500).json({ error: '載入失敗' });
     }
-    res.json(clubs);
   });
 
   app.post('/api/admin/clubs', authMiddleware, requirePerm('clubs'), async (req, res) => {
-    const { club_id, club_name, password } = req.body;
-    if (!club_id || !club_name) return res.status(400).json({ error: '請輸入社號和社名' });
+    try {
+      const { club_id, club_name, password } = req.body;
+      if (!club_id || !club_name) return res.status(400).json({ error: '請輸入社號和社名' });
 
-    const defaultPwd = password || String(club_id).slice(-4);
-    const hash = bcrypt.hashSync(defaultPwd, 10);
+      const defaultPwd = password || String(club_id).slice(-4);
+      const hash = bcrypt.hashSync(defaultPwd, 10);
 
-    await insert("INSERT OR REPLACE INTO clubs (club_id, club_name, password, is_admin) VALUES (?, ?, ?, 0)",
-      [parseInt(club_id), club_name, hash]);
-    res.json({ message: '新增成功' });
+      await insert("INSERT OR REPLACE INTO clubs (club_id, club_name, password, is_admin) VALUES (?, ?, ?, 0)",
+        [parseInt(club_id), club_name, hash]);
+      res.json({ message: '新增成功' });
+    } catch (err) {
+      console.error('Club add error:', err.message);
+      res.status(500).json({ error: '新增失敗，請稍後再試' });
+    }
   });
 
   app.put('/api/admin/clubs/:id', authMiddleware, requirePerm('clubs'), async (req, res) => {
-    const { club_name } = req.body;
-    await runQuery("UPDATE clubs SET club_name = ? WHERE club_id = ? AND is_admin = 0", [club_name, parseInt(req.params.id)]);
-    res.json({ message: '更新成功' });
+    try {
+      const { club_name } = req.body;
+      await runQuery("UPDATE clubs SET club_name = ? WHERE club_id = ? AND is_admin = 0", [club_name, parseInt(req.params.id)]);
+      res.json({ message: '更新成功' });
+    } catch (err) {
+      console.error('Club update error:', err.message);
+      res.status(500).json({ error: '更新失敗，請稍後再試' });
+    }
   });
 
   app.delete('/api/admin/clubs/:id', authMiddleware, requirePerm('clubs'), async (req, res) => {
-    await runQuery("DELETE FROM clubs WHERE club_id = ? AND is_admin = 0", [parseInt(req.params.id)]);
-    res.json({ message: '刪除成功' });
+    try {
+      await runQuery("DELETE FROM clubs WHERE club_id = ? AND is_admin = 0", [parseInt(req.params.id)]);
+      res.json({ message: '刪除成功' });
+    } catch (err) {
+      console.error('Club delete error:', err.message);
+      res.status(500).json({ error: '刪除失敗，請稍後再試' });
+    }
   });
 
   app.put('/api/admin/clubs/:id/reset-password', authMiddleware, requirePerm('clubs'), async (req, res) => {
-    const { password } = req.body;
-    const defaultPwd = password || String(req.params.id).slice(-4);
-    const hash = bcrypt.hashSync(defaultPwd, 10);
-    await runQuery("UPDATE clubs SET password = ? WHERE club_id = ?", [hash, parseInt(req.params.id)]);
-    res.json({ message: '密碼已重設' });
+    try {
+      const { password } = req.body;
+      const defaultPwd = password || String(req.params.id).slice(-4);
+      const hash = bcrypt.hashSync(defaultPwd, 10);
+      await runQuery("UPDATE clubs SET password = ? WHERE club_id = ?", [hash, parseInt(req.params.id)]);
+      res.json({ message: '密碼已重設' });
+    } catch (err) {
+      console.error('Club reset password error:', err.message);
+      res.status(500).json({ error: '重設失敗，請稍後再試' });
+    }
   });
 
   // 次管理者（限定功能權限的管理帳號）管理
@@ -628,53 +701,82 @@ function startServer() {
   }
 
   app.post('/api/admin/admins', authMiddleware, adminMiddleware, async (req, res) => {
-    await ensurePermsColumn();
-    const { club_id, club_name, password, perms } = req.body;
-    if (!club_id || !club_name) return res.status(400).json({ error: '請輸入帳號和姓名' });
-    const id = parseInt(club_id);
-    if (isNaN(id) || id <= 0) return res.status(400).json({ error: '帳號格式不正確' });
-    const exists = await getOne("SELECT club_id FROM clubs WHERE club_id = ?", [id]);
-    if (exists) return res.status(400).json({ error: `帳號 ${id} 已存在` });
+    try {
+      await ensurePermsColumn();
+      const { club_id, club_name, password, perms } = req.body;
+      if (!club_id || !club_name) return res.status(400).json({ error: '請輸入帳號和姓名' });
+      const id = parseInt(club_id);
+      if (isNaN(id) || id <= 0) return res.status(400).json({ error: '帳號格式不正確' });
+      const exists = await getOne("SELECT club_id FROM clubs WHERE club_id = ?", [id]);
+      if (exists) return res.status(400).json({ error: `帳號 ${id} 已存在` });
 
-    const validPerms = Array.isArray(perms) ? perms.filter(p => ADMIN_PERMS.includes(p)) : [];
-    if (validPerms.length === 0) return res.status(400).json({ error: '請至少勾選一項開放權限' });
+      const validPerms = Array.isArray(perms) ? perms.filter(p => ADMIN_PERMS.includes(p)) : [];
+      if (validPerms.length === 0) return res.status(400).json({ error: '請至少勾選一項開放權限' });
 
-    const defaultPwd = password || String(id).slice(-4);
-    const hash = bcrypt.hashSync(defaultPwd, 10);
-    await insert("INSERT INTO clubs (club_id, club_name, password, is_admin, admin_perms) VALUES (?, ?, ?, 0, ?)",
-      [id, club_name, hash, JSON.stringify(validPerms)]);
-    res.json({ message: '次管理者已建立' });
+      const defaultPwd = password || String(id).slice(-4);
+      const hash = bcrypt.hashSync(defaultPwd, 10);
+      await insert("INSERT INTO clubs (club_id, club_name, password, is_admin, admin_perms) VALUES (?, ?, ?, 0, ?)",
+        [id, club_name, hash, JSON.stringify(validPerms)]);
+      res.json({ message: '次管理者已建立' });
+    } catch (err) {
+      console.error('Admin create error:', err.message);
+      res.status(500).json({ error: '建立失敗，請稍後再試' });
+    }
   });
 
   app.put('/api/admin/admins/:id/perms', authMiddleware, adminMiddleware, async (req, res) => {
-    await ensurePermsColumn();
-    const { perms } = req.body;
-    if (!Array.isArray(perms)) return res.status(400).json({ error: '權限格式不正確' });
-    const validPerms = perms.filter(p => ADMIN_PERMS.includes(p));
-    const target = await getOne("SELECT club_id FROM clubs WHERE club_id = ? AND is_admin = 0 AND admin_perms IS NOT NULL AND admin_perms != ''",
-      [parseInt(req.params.id)]);
-    if (!target) return res.status(404).json({ error: '找不到該次管理者' });
-    await runQuery("UPDATE clubs SET admin_perms = ? WHERE club_id = ?", [JSON.stringify(validPerms), target.club_id]);
-    res.json({ message: '權限已更新，次管理者重新登入後生效' });
+    try {
+      await ensurePermsColumn();
+      const { perms } = req.body;
+      if (!Array.isArray(perms)) return res.status(400).json({ error: '權限格式不正確' });
+      const validPerms = perms.filter(p => ADMIN_PERMS.includes(p));
+      const target = await getOne("SELECT club_id FROM clubs WHERE club_id = ? AND is_admin = 0 AND admin_perms IS NOT NULL AND admin_perms != ''",
+        [parseInt(req.params.id)]);
+      if (!target) return res.status(404).json({ error: '找不到該次管理者' });
+      await runQuery("UPDATE clubs SET admin_perms = ? WHERE club_id = ?", [JSON.stringify(validPerms), target.club_id]);
+      res.json({ message: '權限已更新，次管理者重新登入後生效' });
+    } catch (err) {
+      console.error('Admin perms error:', err.message);
+      res.status(500).json({ error: '更新失敗，請稍後再試' });
+    }
   });
 
   app.delete('/api/admin/admins/:id', authMiddleware, adminMiddleware, async (req, res) => {
-    const target = await getOne("SELECT club_id FROM clubs WHERE club_id = ? AND is_admin = 0 AND admin_perms IS NOT NULL AND admin_perms != ''",
-      [parseInt(req.params.id)]);
-    if (!target) return res.status(404).json({ error: '找不到該次管理者' });
-    await runQuery("DELETE FROM clubs WHERE club_id = ?", [target.club_id]);
-    res.json({ message: '次管理者已刪除' });
+    try {
+      const target = await getOne("SELECT club_id FROM clubs WHERE club_id = ? AND is_admin = 0 AND admin_perms IS NOT NULL AND admin_perms != ''",
+        [parseInt(req.params.id)]);
+      if (!target) return res.status(404).json({ error: '找不到該次管理者' });
+      await runQuery("DELETE FROM clubs WHERE club_id = ?", [target.club_id]);
+      res.json({ message: '次管理者已刪除' });
+    } catch (err) {
+      console.error('Admin delete error:', err.message);
+      res.status(500).json({ error: '刪除失敗，請稍後再試' });
+    }
   });
 
   app.post('/api/admin/import-clubs', authMiddleware, requirePerm('clubs'), async (req, res) => {
-    const { clubs } = req.body;
-    if (!clubs || !Array.isArray(clubs)) return res.status(400).json({ error: '資料格式錯誤' });
+    try {
+      const { clubs } = req.body;
+      if (!clubs || !Array.isArray(clubs)) return res.status(400).json({ error: '資料格式錯誤' });
 
-    await importClubs(clubs);
-    res.json({ message: `成功匯入 ${clubs.length} 個社團` });
+      await importClubs(clubs);
+      res.json({ message: `成功匯入 ${clubs.length} 個社團` });
+    } catch (err) {
+      console.error('Import clubs error:', err.message);
+      res.status(500).json({ error: '匯入失敗，請稍後再試' });
+    }
   });
 
-  app.post('/api/admin/import-excel', authMiddleware, requirePerm('clubs'), upload.single('file'), async (req, res) => {
+  app.post('/api/admin/import-excel', authMiddleware, requirePerm('clubs'), (req, res, next) => {
+    upload.single('file')(req, res, (err) => {
+      if (err) {
+        if (err.code === 'LIMIT_FILE_SIZE') return res.status(400).json({ error: '檔案過大：單檔不可超過 10MB' });
+        console.error('Import multer error:', err);
+        return res.status(400).json({ error: String(err.message).includes('不支援') ? err.message : '上傳失敗：' + err.message });
+      }
+      next();
+    });
+  }, async (req, res) => {
     if (!req.file) return res.status(400).json({ error: '請選擇檔案' });
 
     try {
@@ -710,60 +812,87 @@ function startServer() {
   });
 
   // Settings
+  // PUT 只允許更新白名單內的 key（防止覆寫 jwt_secret 等系統內部設定）
+  const SETTINGS_ALLOWED_KEYS = ['phase1_deadline', 'payment_deadline', 'phase2_deadline', 'guaranteed_quota', 'phase1_total_quota', 'line_group_id', 'bot_name'];
+
   app.get('/api/admin/settings', authMiddleware, requirePerm('settings'), async (req, res) => {
-    const settingsRows = await getAll("SELECT key, value FROM settings");
-    const settings = {};
-    settingsRows.forEach(s => { settings[s.key] = s.value; });
-    const today = taipeiToday();
-    const quota = parseInt(settings.phase1_total_quota || '160');
-    const current = await occupancy(getDb());
-    res.json({
-      ...settings,
-      derived_phase: phaseState(settings, today),
-      today,
-      occupancy: current,
-      remaining: Math.max(0, quota - current)
-    });
+    try {
+      const settingsRows = await getAll("SELECT key, value FROM settings");
+      const settings = {};
+      settingsRows.forEach(s => { settings[s.key] = s.value; });
+      const today = taipeiToday();
+      const quota = parseInt(settings.phase1_total_quota || '160');
+      const current = await occupancy(getDb());
+      res.json({
+        ...settings,
+        derived_phase: phaseState(settings, today),
+        today,
+        occupancy: current,
+        remaining: Math.max(0, quota - current)
+      });
+    } catch (err) {
+      console.error('Settings load error:', err.message);
+      res.status(500).json({ error: '載入失敗' });
+    }
   });
 
   app.put('/api/admin/settings', authMiddleware, requirePerm('settings'), async (req, res) => {
-    const settings = req.body;
-    const stmts = Object.entries(settings).map(([key, value]) => ({
-      sql: "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
-      args: [key, String(value)]
-    }));
-    await getDb().batch(stmts, 'write');
-    res.json({ message: '設定已更新' });
+    try {
+      const settings = req.body || {};
+      const stmts = [];
+      for (const [key, value] of Object.entries(settings)) {
+        if (!SETTINGS_ALLOWED_KEYS.includes(key)) continue;
+        const str = String(value).trim();
+        if (['phase1_deadline', 'payment_deadline', 'phase2_deadline'].includes(key) && str && !/^\d{4}-\d{2}-\d{2}$/.test(str)) {
+          return res.status(400).json({ error: '截止日格式不正確（需為 YYYY-MM-DD）' });
+        }
+        if (['guaranteed_quota', 'phase1_total_quota'].includes(key) && (!/^\d+$/.test(str) || parseInt(str, 10) <= 0)) {
+          return res.status(400).json({ error: '名額需為正整數' });
+        }
+        stmts.push({ sql: "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", args: [key, str] });
+      }
+      if (!stmts.length) return res.status(400).json({ error: '沒有可更新的設定項目' });
+      await getDb().batch(stmts, 'write');
+      res.json({ message: '設定已更新' });
+    } catch (err) {
+      console.error('Settings update error:', err.message);
+      res.status(500).json({ error: '儲存失敗，請稍後再試' });
+    }
   });
 
   // Full Backup (JSON)
   app.get('/api/admin/backup', authMiddleware, requirePerm('settings'), async (req, res) => {
-    const clubs = await getAll("SELECT * FROM clubs");
-    const registrations = await getAll("SELECT * FROM registrations");
-    const paymentProofs = await getAll("SELECT * FROM payment_proofs");
-    const settings = await getAll("SELECT * FROM settings");
-    const feedback = await getAll("SELECT * FROM feedback");
-    const lineMessages = await getAll("SELECT * FROM line_messages");
-    const lineSources = await getAll("SELECT * FROM line_sources");
-    const knowledge = await getAll("SELECT * FROM knowledge");
+    try {
+      const clubs = await getAll("SELECT * FROM clubs");
+      const registrations = await getAll("SELECT * FROM registrations");
+      const paymentProofs = await getAll("SELECT * FROM payment_proofs");
+      const settings = await getAll("SELECT * FROM settings");
+      const feedback = await getAll("SELECT * FROM feedback");
+      const lineMessages = await getAll("SELECT * FROM line_messages");
+      const lineSources = await getAll("SELECT * FROM line_sources");
+      const knowledge = await getAll("SELECT * FROM knowledge");
 
-    const backup = {
-      version: 1,
-      exportedAt: new Date().toISOString(),
-      clubs,
-      registrations,
-      payment_proofs: paymentProofs,
-      settings,
-      feedback,
-      line_messages: lineMessages,
-      line_sources: lineSources,
-      knowledge
-    };
+      const backup = {
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        clubs,
+        registrations,
+        payment_proofs: paymentProofs,
+        settings,
+        feedback,
+        line_messages: lineMessages,
+        line_sources: lineSources,
+        knowledge
+      };
 
-    const json = JSON.stringify(backup, null, 2);
-    res.setHeader('Content-Type', 'application/json');
-    res.setHeader('Content-Disposition', `attachment; filename=backup_${new Date().toISOString().slice(0,10)}.json`);
-    res.send(json);
+      const json = JSON.stringify(backup, null, 2);
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Content-Disposition', `attachment; filename=backup_${new Date().toISOString().slice(0,10)}.json`);
+      res.send(json);
+    } catch (err) {
+      console.error('Backup error:', err.message);
+      res.status(500).json({ error: '備份失敗，請稍後再試' });
+    }
   });
 
   // Full Restore (JSON)
@@ -878,20 +1007,21 @@ function startServer() {
 
   // Export Excel
   app.get('/api/admin/export', authMiddleware, requirePerm('registrations'), async (req, res) => {
-    const { club_id, phase, status } = req.query;
-    let sql = `
-      SELECT r.*, c.club_name
-      FROM registrations r
-      JOIN clubs c ON r.club_id = c.club_id
-      WHERE 1=1
-    `;
-    const params = [];
-    if (club_id) { sql += " AND r.club_id = ?"; params.push(parseInt(club_id)); }
-    if (phase) { sql += " AND r.phase = ?"; params.push(parseInt(phase)); }
-    if (status) { sql += " AND r.status = ?"; params.push(status); }
-    sql += " ORDER BY r.club_id, r.created_at";
+    try {
+      const { club_id, phase, status } = req.query;
+      let sql = `
+        SELECT r.*, c.club_name
+        FROM registrations r
+        JOIN clubs c ON r.club_id = c.club_id
+        WHERE 1=1
+      `;
+      const params = [];
+      if (club_id) { sql += " AND r.club_id = ?"; params.push(parseInt(club_id)); }
+      if (phase) { sql += " AND r.phase = ?"; params.push(parseInt(phase)); }
+      if (status) { sql += " AND r.status = ?"; params.push(status); }
+      sql += " ORDER BY r.club_id, r.created_at";
 
-    const data = await getAll(sql, params);
+      const data = await getAll(sql, params);
     const exportData = data.map(r => ({
       '社號': r.club_id,
       '社名': r.club_name,
@@ -942,13 +1072,17 @@ function startServer() {
     XLSX.utils.book_append_sheet(wb, summarySheet, '彙整統計');
 
     const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
-    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', 'attachment; filename=registration_report.xlsx');
-    res.send(buffer);
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', 'attachment; filename=registration_report.xlsx');
+      res.send(buffer);
+    } catch (err) {
+      console.error('Export error:', err.message);
+      res.status(500).json({ error: '匯出失敗，請稍後再試' });
+    }
   });
 
   // ===== LINE Bot Webhook =====
-  app.post('/line/webhook', async (req, res) => {
+  app.post('/line/webhook', webhookLimiter, async (req, res) => {
     const events = (req.body && req.body.events) || [];
     const signature = req.headers['x-line-signature'];
     recordWebhookDiag('ping', events);

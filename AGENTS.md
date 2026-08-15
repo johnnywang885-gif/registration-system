@@ -224,7 +224,7 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 - `POST /api/admin/announce/sync` — 同步群組成員（admin；`syncGroupMembers()`：對每個 group 來源分頁拉 `GET /v2/bot/group/{id}/members/ids` 全部成員 → 逐個 `GET /v2/bot/profile/{userId}` 取名稱 → upsert 進 `line_sources` 為 user（`ON CONFLICT DO UPDATE SET source_name`，不動 `last_message_at`）；**members/ids 失敗（如 bot 已退群、群組 id 過期）時自動 fallback：改收錄該群組 `line_messages` 的發送者**；**只有傳過訊息給 bot 的人才會被 `line_sources` 收錄**，群組內從未傳訊息的成員靠此同步後才能被 announce/match 比對；回應含 `enrolled`/`failed`/`groups`（每群組 ok/status/apiMembers/fallbackMembers）/`samples`（前 5 位名稱）供 UI 顯示診斷；無 LINE token 時全部為 0
 - `POST /api/admin/announce/match` — 依社號/社名比對 `line_sources.source_name`（群組類型排序在前），回每社 `candidates`（含 source_type/source_id/source_name）；比對不到回空陣列
 - `POST /api/admin/announce/send` — 發送 AI 公告（admin）：`mode:'group'`＋`text` → 推播 `line_group_id`（未設定 501）；`mode:'clubs'`＋`items:[{club_id, club_name, message, target_id}]` → 逐筆 `pushToLineUser`，**逐筆回報** `delivered`/`failed`（有失敗不中斷其餘，整批仍回 200）
-- `POST /line/webhook` — LINE Messaging API webhook (no auth; validates `X-Line-Signature` HMAC-SHA256 with `LINE_CHANNEL_SECRET`; empty-event requests pass WITHOUT signature so LINE console URL verification works; acks 200 then processes events async)
+- `POST /line/webhook` — LINE Messaging API webhook (no auth; rate-limited 600 req/min 防灌水；validates `X-Line-Signature` HMAC-SHA256 with `LINE_CHANNEL_SECRET`; empty-event requests pass WITHOUT signature so LINE console URL verification works; acks 200 then processes events async)
 - `GET /api/payment/file/:id` — view payment proof file (auth required: admin or owning club)
 - `GET /api/payment/my-uploads` (club) / `GET /api/payment/all` (admin) — list payment proofs
 - `POST /api/admin/import-clubs` — bulk import clubs (admin only)
@@ -232,7 +232,7 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 - `GET /api/admin/backup` — full backup as JSON (admin only)
 - `POST /api/admin/restore` — restore from JSON (admin only)
 - `POST /api/admin/clear-data` — clear all registrations & payment proofs (keeps clubs & settings) (admin only)
-- `GET /api/admin/settings` / `PUT /api/admin/settings` — read (incl. `derived_phase`, `today`, `occupancy`, `remaining`) / update deadline+quota settings (admin only)
+- `GET /api/admin/settings` / `PUT /api/admin/settings` — read (incl. `derived_phase`, `today`, `occupancy`, `remaining`) / update deadline+quota settings (admin only; **PUT 有 key 白名單**：僅 `phase1_deadline`/`payment_deadline`/`phase2_deadline`（需 YYYY-MM-DD）/`guaranteed_quota`/`phase1_total_quota`（需正整數）/`line_group_id`/`bot_name`，白名單外 key 一律忽略，防止覆寫 `jwt_secret` 等系統內部設定）
 - `GET /api/admin/export` — export as XLSX (admin only); accepts `club_id`/`phase`/`status` filters, applied to BOTH sheets (報名資料 + 彙整統計)
 - `GET /health` — health check (no auth)
 

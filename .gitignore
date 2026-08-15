@@ -6,3 +6,13 @@ uploads/payments/*
 *.log
 test/*.db
 test/.chrome-profile/
+
+# 根目錄暫存檔（備份含 PII、圖檔、文件範本）
+/backup_*.json
+/*.docx
+/*.xlsx
+/*.jpg
+/*.png
+
+# 測試用臨時腳本（用完即刪）
+test/_*.js
