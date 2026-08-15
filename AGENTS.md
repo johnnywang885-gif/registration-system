@@ -272,6 +272,10 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 ### Export 報名資料 Sheet Status Mapping
 - `server.js` maps `r.status` for the 報名資料 sheet: `registered → 已報名`, `standby → 候補`, `paid → 已繳費`, everything else → `棄權`. Never collapse `standby` into the `棄權` fallback (past bug #2); `test/review_b_export.js` guards this mapping.
 
+### API 錯誤訊息不得洩漏內部細節
+- 所有 500 回應一律用泛化訊息（「載入失敗」「操作失敗，請稍後再試」「匯入失敗，請稍後再試」…），詳細原因只進 `console.error`，**不要回傳 `err.message`**（可能含 SQL 語法、檔案路徑等內部資訊）。
+- 例外：上傳類 400（multer fileFilter「不支援的檔案格式…」、超過大小限制）刻意回傳明確訊息給使用者；`knowledge/upload` 200 回應的 `details[].error` 逐檔失敗原因（判讀失敗等）刻意保留供後台顯示。
+
 ### Birthday Field (民國年)
 - Backend stores dates in Western format (`YYYY-MM-DD`)
 - Frontend (`register.html`, `admin.html`) converts to ROC format for display (`westernToROC()`) and back for storage (`rocToWestern()`)

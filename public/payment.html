@@ -129,7 +129,7 @@
           <div class="preview-item">
             <div class="file-icon">PDF</div>
           </div>
-          <p style="align-self: center;">${file.name}</p>
+          <p style="align-self: center;">${esc(file.name)}</p>
         `;
       } else {
         const reader = new FileReader();
@@ -138,7 +138,7 @@
             <div class="preview-item">
               <img src="${e.target.result}" alt="預覽">
             </div>
-            <p style="align-self: center;">${file.name}</p>
+            <p style="align-self: center;">${esc(file.name)}</p>
           `;
         };
         reader.readAsDataURL(file);
@@ -248,8 +248,10 @@
         });
         if (!res.ok) return;
         const blob = await res.blob();
-        imgEl.src = URL.createObjectURL(blob);
+        const url = URL.createObjectURL(blob);
+        imgEl.src = url;
         imgEl.style.display = '';
+        imgEl.addEventListener('load', () => URL.revokeObjectURL(url), { once: true });
       } catch (err) {
         console.error(err);
       }
@@ -262,7 +264,9 @@
         });
         if (!res.ok) { showAlert('無法載入檔案', 'error'); return; }
         const blob = await res.blob();
-        window.open(URL.createObjectURL(blob), '_blank');
+        const url = URL.createObjectURL(blob);
+        window.open(url, '_blank');
+        setTimeout(() => URL.revokeObjectURL(url), 60000);
       } catch (err) {
         showAlert('載入檔案失敗', 'error');
       }

@@ -189,7 +189,7 @@
           <input type="file" id="kbFiles" accept=".pdf,.docx,.xls,.xlsx,.txt" multiple>
         </div>
         <div class="btn-group">
-          <button class="btn btn-success" onclick="uploadKnowledgeFiles()">上傳並匯入知識</button>
+          <button class="btn btn-success" id="kbUploadBtn" onclick="uploadKnowledgeFiles()">上傳並匯入知識</button>
           <span id="kbUploadMsg" style="margin-left:12px; font-size:13px; color:#4a3728;"></span>
         </div>
         <div id="knowledgeList" style="margin-top:16px;"></div>
@@ -488,28 +488,52 @@
     }
 
     async function markPaid(id) {
-      await fetch(`/api/admin/payment/${id}`, {
-        method: 'PUT',
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      loadRegistrations();
+      try {
+        const res = await fetch(`/api/admin/payment/${id}`, {
+          method: 'PUT',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (res.status === 401) { localStorage.clear(); window.location.href = '/'; return; }
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { toast(data.error || '操作失敗，請稍後再試', 'error'); return; }
+        toast(data.message || '已標記為已繳費', 'success');
+        loadRegistrations();
+      } catch (err) {
+        toast('操作失敗，請稍後再試', 'error');
+      }
     }
 
     async function markForfeit(id) {
       if (!confirm('確定要標記為棄權？')) return;
-      await fetch(`/api/admin/forfeit/${id}`, {
-        method: 'PUT',
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      loadRegistrations();
+      try {
+        const res = await fetch(`/api/admin/forfeit/${id}`, {
+          method: 'PUT',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (res.status === 401) { localStorage.clear(); window.location.href = '/'; return; }
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { toast(data.error || '操作失敗，請稍後再試', 'error'); return; }
+        toast(data.message || '已標記為棄權', 'success');
+        loadRegistrations();
+      } catch (err) {
+        toast('操作失敗，請稍後再試', 'error');
+      }
     }
 
     async function resetStatus(id) {
-      await fetch(`/api/admin/reset-status/${id}`, {
-        method: 'PUT',
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      loadRegistrations();
+      try {
+        const res = await fetch(`/api/admin/reset-status/${id}`, {
+          method: 'PUT',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (res.status === 401) { localStorage.clear(); window.location.href = '/'; return; }
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { toast(data.error || '操作失敗，請稍後再試', 'error'); return; }
+        toast(data.message || '已還原為已報名', 'success');
+        loadRegistrations();
+      } catch (err) {
+        toast('操作失敗，請稍後再試', 'error');
+      }
     }
 
     async function exportExcel() {
@@ -595,16 +619,24 @@
     }
 
     async function reviewPayment(id, action) {
-      await fetch(`/api/payment/review/${id}`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({ action })
-      });
-      loadPayments();
-      loadRegistrations();
+      try {
+        const res = await fetch(`/api/payment/review/${id}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({ action })
+        });
+        if (res.status === 401) { localStorage.clear(); window.location.href = '/'; return; }
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { toast(data.error || '審核失敗，請稍後再試', 'error'); return; }
+        toast(data.message || (action === 'approve' ? '已核准繳費' : '已駁回'), 'success');
+        loadPayments();
+        loadRegistrations();
+      } catch (err) {
+        toast('審核失敗，請稍後再試', 'error');
+      }
     }
 
     async function viewProof(id) {
@@ -614,7 +646,9 @@
         });
         if (!res.ok) { toast('無法載入檔案', 'error'); return; }
         const blob = await res.blob();
-        window.open(URL.createObjectURL(blob), '_blank');
+        const url = URL.createObjectURL(blob);
+        window.open(url, '_blank');
+        setTimeout(() => URL.revokeObjectURL(url), 60000);
       } catch (err) {
         toast('載入檔案失敗', 'error');
       }
@@ -622,12 +656,20 @@
 
     async function resetPayment(id) {
       if (!confirm('確定重設為待審核？已繳費狀態將會被還原。')) return;
-      await fetch(`/api/payment/reset/${id}`, {
-        method: 'PUT',
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      loadPayments();
-      loadRegistrations();
+      try {
+        const res = await fetch(`/api/payment/reset/${id}`, {
+          method: 'PUT',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (res.status === 401) { localStorage.clear(); window.location.href = '/'; return; }
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { toast(data.error || '重設失敗，請稍後再試', 'error'); return; }
+        toast(data.message || '已重設為待審核', 'success');
+        loadPayments();
+        loadRegistrations();
+      } catch (err) {
+        toast('重設失敗，請稍後再試', 'error');
+      }
     }
 
     // === Clubs ===
@@ -841,17 +883,26 @@
       const clubId = document.getElementById('newClubId').value;
       const clubName = document.getElementById('newClubName').value;
       const password = document.getElementById('newClubPwd').value;
+      if (!clubId || !clubName) { toast('請填寫社號與社名', 'error'); return; }
 
-      await fetch('/api/admin/clubs', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({ club_id: parseInt(clubId), club_name: clubName, password: password || undefined })
-      });
-      closeModal();
-      loadClubs();
+      try {
+        const res = await fetch('/api/admin/clubs', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({ club_id: parseInt(clubId), club_name: clubName, password: password || undefined })
+        });
+        if (res.status === 401) { localStorage.clear(); window.location.href = '/'; return; }
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { toast(data.error || '新增失敗，請稍後再試', 'error'); return; }
+        toast(data.message || '已新增社團', 'success');
+        closeModal();
+        loadClubs();
+      } catch (err) {
+        toast('新增失敗，請稍後再試', 'error');
+      }
     }
 
     function editClub(id) {
@@ -865,36 +916,59 @@
         </div>
       `;
       document.getElementById('modalConfirm').onclick = async () => {
-        await fetch(`/api/admin/clubs/${id}`, {
-          method: 'PUT',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
-          },
-          body: JSON.stringify({ club_name: document.getElementById('editClubName').value })
-        });
-        closeModal();
-        loadClubs();
+        try {
+          const res = await fetch(`/api/admin/clubs/${id}`, {
+            method: 'PUT',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify({ club_name: document.getElementById('editClubName').value })
+          });
+          if (res.status === 401) { localStorage.clear(); window.location.href = '/'; return; }
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) { toast(data.error || '更新失敗，請稍後再試', 'error'); return; }
+          toast(data.message || '已更新社團', 'success');
+          closeModal();
+          loadClubs();
+        } catch (err) {
+          toast('更新失敗，請稍後再試', 'error');
+        }
       };
       document.getElementById('modal').classList.remove('hidden');
     }
 
     async function resetPassword(id) {
       if (!confirm('確定要重設密碼？')) return;
-      await fetch(`/api/admin/clubs/${id}/reset-password`, {
-        method: 'PUT',
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      toast('密碼已重設為預設值');
+      try {
+        const res = await fetch(`/api/admin/clubs/${id}/reset-password`, {
+          method: 'PUT',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (res.status === 401) { localStorage.clear(); window.location.href = '/'; return; }
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { toast(data.error || '重設失敗，請稍後再試', 'error'); return; }
+        toast(data.message || '密碼已重設為預設值', 'success');
+      } catch (err) {
+        toast('重設失敗，請稍後再試', 'error');
+      }
     }
 
     async function deleteClub(id) {
       if (!confirm('確定要刪除此社團？')) return;
-      await fetch(`/api/admin/clubs/${id}`, {
-        method: 'DELETE',
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      loadClubs();
+      try {
+        const res = await fetch(`/api/admin/clubs/${id}`, {
+          method: 'DELETE',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (res.status === 401) { localStorage.clear(); window.location.href = '/'; return; }
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { toast(data.error || '刪除失敗，請稍後再試', 'error'); return; }
+        toast(data.message || '已刪除社團', 'success');
+        loadClubs();
+      } catch (err) {
+        toast('刪除失敗，請稍後再試', 'error');
+      }
     }
 
     function importClubsFromExcel() {
@@ -987,15 +1061,22 @@
         phase1_total_quota: document.getElementById('settingPhase1Quota').value
       };
 
-      await fetch('/api/admin/settings', {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify(settings)
-      });
-      toast('設定已儲存');
+      try {
+        const res = await fetch('/api/admin/settings', {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify(settings)
+        });
+        if (res.status === 401) { localStorage.clear(); window.location.href = '/'; return; }
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { toast(data.error || '儲存失敗，請稍後再試', 'error'); return; }
+        toast(data.message || '設定已儲存', 'success');
+      } catch (err) {
+        toast('儲存失敗，請稍後再試', 'error');
+      }
     });
 
     document.getElementById('changePasswordForm').addEventListener('submit', async (e) => {
@@ -1130,11 +1211,18 @@
     }
 
     async function toggleKnowledge(id) {
-      await fetch(`/api/admin/knowledge/${id}/toggle`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      loadKnowledge();
+      try {
+        const res = await fetch(`/api/admin/knowledge/${id}/toggle`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (res.status === 401) { localStorage.clear(); window.location.href = '/'; return; }
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { toast(data.error || '操作失敗，請稍後再試', 'error'); return; }
+        loadKnowledge();
+      } catch (err) {
+        toast('操作失敗，請稍後再試', 'error');
+      }
     }
 
     async function deleteKnowledge(id) {
@@ -1176,9 +1264,12 @@
     async function uploadKnowledgeFiles() {
       const input = document.getElementById('kbFiles');
       const msg = document.getElementById('kbUploadMsg');
+      const btn = document.getElementById('kbUploadBtn');
       if (!input.files.length) { msg.textContent = '請先選擇檔案'; return; }
+      if (btn.disabled) return;
       const fd = new FormData();
       for (const f of input.files) fd.append('files', f);
+      btn.disabled = true;
       msg.textContent = '上傳判讀中，請稍候...';
       try {
         const res = await fetch('/api/admin/knowledge/upload', {
@@ -1192,6 +1283,8 @@
         if (res.ok) loadKnowledge();
       } catch (err) {
         msg.textContent = '上傳失敗：' + err.message;
+      } finally {
+        btn.disabled = false;
       }
     }
 

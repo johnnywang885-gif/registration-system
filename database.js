@@ -179,15 +179,19 @@ async function ensureKnowledgeSourceFileColumn() {
 }
 
 async function importClubs(clubsData) {
-  const stmts = clubsData.map(club => {
+  if (!Array.isArray(clubsData) || clubsData.length === 0) return 0;
+  const valid = clubsData.filter(c => c && c.club_id != null && c.club_name != null && String(c.club_name).trim() !== '');
+  if (valid.length === 0) return 0;
+  const stmts = valid.map(club => {
     const defaultPwd = String(club.club_id).slice(-4);
     const hash = bcrypt.hashSync(defaultPwd, 10);
     return {
       sql: "INSERT OR REPLACE INTO clubs (club_id, club_name, password, is_admin) VALUES (?, ?, ?, 0)",
-      args: [club.club_id, club.club_name, hash]
+      args: [club.club_id, String(club.club_name).trim(), hash]
     };
   });
   await db.batch(stmts, 'write');
+  return valid.length;
 }
 
 function saveDatabase() {

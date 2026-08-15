@@ -78,16 +78,19 @@ async function runEnforcement() {
   const settings = await getSettings();
   const today = taipeiToday();
   const quota = parseInt(settings.phase1_total_quota || '160');
+  const p1d = settings.phase1_deadline;
+  const payd = settings.payment_deadline;
+  const p2d = settings.phase2_deadline;
 
-  if (today > (settings.payment_deadline || '')) {
+  if (payd && today > payd) {
     await forfeitUnpaidByPhase(db, 1);
   }
-  if (today > (settings.phase1_deadline || '') && today <= (settings.payment_deadline || '')) {
+  if (p1d && payd && today > p1d && today <= payd) {
     await promoteStandby(db, quota);
-  } else if (today > (settings.payment_deadline || '') && today <= (settings.phase2_deadline || '')) {
+  } else if (payd && p2d && today > payd && today <= p2d) {
     await promoteStandby(db, quota, { requirePaidClub: true });
   }
-  if (today > (settings.phase2_deadline || '')) {
+  if (p2d && today > p2d) {
     await forfeitUnpaidByPhase(db, 2);
   }
 }

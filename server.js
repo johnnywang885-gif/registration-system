@@ -188,7 +188,8 @@ function startServer() {
         [req.user.clubId, club ? club.club_name : String(req.user.clubId), cat, text]);
       res.json({ message: '意見已送出，感謝您的回饋', id });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      console.error('Feedback submit error:', err.message);
+      res.status(500).json({ error: '送出失敗，請稍後再試' });
     }
   });
 
@@ -202,7 +203,8 @@ function startServer() {
       `);
       res.json(rows);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      console.error('Feedback list error:', err.message);
+      res.status(500).json({ error: '載入失敗' });
     }
   });
 
@@ -214,7 +216,8 @@ function startServer() {
       await runQuery("UPDATE feedback SET status = ? WHERE id = ?", [status, id]);
       res.json({ message: '已更新' });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      console.error('Feedback update error:', err.message);
+      res.status(500).json({ error: '更新失敗，請稍後再試' });
     }
   });
 
@@ -520,7 +523,7 @@ function startServer() {
       res.json({ message: `已遞補 ${result.promoted} 人`, promoted: result.promoted });
     } catch (err) {
       console.error('Promote error:', err.message);
-      res.status(500).json({ error: '遞補失敗: ' + err.message });
+      res.status(500).json({ error: '遞補失敗，請稍後再試' });
     }
   });
 
@@ -807,7 +810,8 @@ function startServer() {
       fs.unlinkSync(req.file.path);
       res.json({ message: `成功匯入 ${clubs.length} 個社團` });
     } catch (err) {
-      res.status(500).json({ error: '匯入失敗: ' + err.message });
+      console.error('Import excel error:', err.message);
+      res.status(500).json({ error: '匯入失敗，請稍後再試' });
     }
   });
 
@@ -987,7 +991,8 @@ function startServer() {
 
       res.json({ message: `還原成功：${backup.clubs.length} 個社團、${backup.registrations.length} 筆報名` });
     } catch (err) {
-      res.status(500).json({ error: '還原失敗: ' + err.message });
+      console.error('Restore error:', err.message);
+      res.status(500).json({ error: '還原失敗，請稍後再試' });
     }
   });
 
@@ -1001,7 +1006,8 @@ function startServer() {
       ], 'write');
       res.json({ message: '報名資料已全部清除（社團與系統設定保留）' });
     } catch (err) {
-      res.status(500).json({ error: '清除失敗: ' + err.message });
+      console.error('Clear data error:', err.message);
+      res.status(500).json({ error: '清除失敗，請稍後再試' });
     }
   });
 
@@ -1114,7 +1120,7 @@ function startServer() {
       });
     } catch (err) {
       console.error('Line diag error:', err.message);
-      res.status(500).json({ error: err.message });
+      res.status(500).json({ error: '載入失敗' });
     }
   });
 
@@ -1126,7 +1132,8 @@ function startServer() {
       if (!ok) return res.status(501).json({ error: 'LINE 尚未設定（缺少環境變數或 bot 尚未加入群組）' });
       res.json({ message: '已推播到 LINE 群組' });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      console.error('Line announce error:', err.message);
+      res.status(500).json({ error: '推播失敗，請稍後再試' });
     }
   });
 
@@ -1148,7 +1155,8 @@ function startServer() {
       const id = await insert("INSERT INTO knowledge (title, content) VALUES (?, ?)", [title, content]);
       res.json({ message: '已新增知識', id });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      console.error('Knowledge add error:', err.message);
+      res.status(500).json({ error: '新增失敗，請稍後再試' });
     }
   });
 
@@ -1161,7 +1169,8 @@ function startServer() {
       await runQuery("UPDATE knowledge SET title = ?, content = ?, updated_at = datetime('now') WHERE id = ?", [title, content, id]);
       res.json({ message: '已更新知識' });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      console.error('Knowledge update error:', err.message);
+      res.status(500).json({ error: '更新失敗，請稍後再試' });
     }
   });
 
@@ -1171,7 +1180,8 @@ function startServer() {
       await runQuery("UPDATE knowledge SET active = 1 - active, updated_at = datetime('now') WHERE id = ?", [id]);
       res.json({ message: '已更新' });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      console.error('Knowledge toggle error:', err.message);
+      res.status(500).json({ error: '更新失敗，請稍後再試' });
     }
   });
 
@@ -1181,7 +1191,8 @@ function startServer() {
       await runQuery("DELETE FROM knowledge WHERE id = ?", [id]);
       res.json({ message: '已刪除知識' });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      console.error('Knowledge delete error:', err.message);
+      res.status(500).json({ error: '刪除失敗，請稍後再試' });
     }
   });
 
@@ -1193,7 +1204,7 @@ function startServer() {
         if (err.code === 'LIMIT_FILE_SIZE') return res.status(400).json({ error: '檔案過大：單檔不可超過 20MB' });
         if (err.code === 'LIMIT_FILE_COUNT') return res.status(400).json({ error: '一次最多上傳 5 個檔案' });
         console.error('Upload multer error:', err);
-        return res.status(400).json({ error: '上傳失敗：' + err.message });
+        return res.status(400).json({ error: '上傳失敗，請稍後再試' });
       }
       next();
     });
@@ -1222,7 +1233,8 @@ function startServer() {
         : `已匯入 ${stmts.length} 筆知識`;
       res.json({ message, total: stmts.length, failed: failed.length, details: results });
     } catch (err) {
-      res.status(500).json({ error: '匯入失敗: ' + err.message });
+      console.error('Knowledge upload error:', err.message);
+      res.status(500).json({ error: '匯入失敗，請稍後再試' });
     }
   });
 
@@ -1237,7 +1249,8 @@ function startServer() {
       });
       res.json({ message: `已刪除檔案「${filename}」及其 ${result.rowsAffected} 筆知識` });
     } catch (err) {
-      res.status(500).json({ error: '刪除失敗: ' + err.message });
+      console.error('Knowledge delete-file error:', err.message);
+      res.status(500).json({ error: '刪除失敗，請稍後再試' });
     }
   });
 
@@ -1264,7 +1277,8 @@ function startServer() {
       const sync = await syncGroupMembers();
       res.json({ message: `已更新 ${updated} 個來源名稱、同步 ${sync.enrolled} 位群組成員`, updated, enrolled: sync.enrolled, failed: sync.failed, groups: sync.groups, samples: sync.samples });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      console.error('Line sources refresh error:', err.message);
+      res.status(500).json({ error: '更新失敗，請稍後再試' });
     }
   });
 
@@ -1289,7 +1303,7 @@ function startServer() {
       res.json({ digest: text, count: rows.length, source_type, source_id });
     } catch (err) {
       console.error('Line digest error:', err.message);
-      res.status(500).json({ error: '彙整失敗: ' + err.message });
+      res.status(500).json({ error: '彙整失敗，請稍後再試' });
     }
   });
 
@@ -1305,7 +1319,8 @@ function startServer() {
       if (!ok) return res.status(501).json({ error: '傳送失敗：LINE 尚未設定，或對象非好友（個別社需先加官方帳號為好友）' });
       res.json({ message: '已傳送' });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      console.error('Line send error:', err.message);
+      res.status(500).json({ error: '傳送失敗，請稍後再試' });
     }
   });
 
@@ -1325,7 +1340,7 @@ function startServer() {
       res.json({ broadcast, perClub: perClub || [] });
     } catch (err) {
       console.error('Announce generate error:', err.message);
-      res.status(500).json({ error: '產生失敗: ' + err.message });
+      res.status(500).json({ error: '產生失敗，請稍後再試' });
     }
   });
 
@@ -1344,7 +1359,7 @@ function startServer() {
       });
     } catch (err) {
       console.error('Announce sync error:', err.message);
-      res.status(500).json({ error: err.message });
+      res.status(500).json({ error: '同步失敗，請稍後再試' });
     }
   });
 
@@ -1373,7 +1388,8 @@ function startServer() {
       });
       res.json(results);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      console.error('Announce match error:', err.message);
+      res.status(500).json({ error: '比對失敗，請稍後再試' });
     }
   });
 
@@ -1407,7 +1423,7 @@ function startServer() {
       res.status(400).json({ error: '模式不正確' });
     } catch (err) {
       console.error('Announce send error:', err.message);
-      res.status(500).json({ error: err.message });
+      res.status(500).json({ error: '傳送失敗，請稍後再試' });
     }
   });
 

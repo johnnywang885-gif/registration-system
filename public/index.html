@@ -106,6 +106,15 @@
     });
   </script>
   <script>
+    function esc(value) {
+      return String(value == null ? '' : value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
     async function loadRules() {
       const el = document.getElementById('rulesContent');
       try {
@@ -146,9 +155,9 @@
             <span style="display:inline-block; padding:6px 18px; border-radius:20px; font-size:14px; font-weight:600; color:#fff; background:${badgeColor[phase]};">${phaseLabel[phase]}</span>
           </div>
           <ul style="padding-left:20px; line-height:2; font-size:14px; color:#5a4636;">
-            <li><strong>第一階段報名</strong>：即日起至 <strong>${p1d || '—'}</strong>；每社保障 ${guaranteed} 名，超過部分列為候補；總名額上限 ${totalQuota} 人。</li>
-            <li><strong>繳費</strong>：請於 <strong>${payd || '—'}</strong> 前上傳繳費證明，未繳費視同未報名（自動棄權）。</li>
-            <li><strong>第二階段報名</strong>：於 <strong>${p2d || '—'}</strong> 前，總名額未滿 ${totalQuota} 人時可繼續報名，超過列為候補。</li>
+            <li><strong>第一階段報名</strong>：即日起至 <strong>${esc(p1d) || '—'}</strong>；每社保障 ${esc(guaranteed)} 名，超過部分列為候補；總名額上限 ${esc(totalQuota)} 人。</li>
+            <li><strong>繳費</strong>：請於 <strong>${esc(payd) || '—'}</strong> 前上傳繳費證明，未繳費視同未報名（自動棄權）。</li>
+            <li><strong>第二階段報名</strong>：於 <strong>${esc(p2d) || '—'}</strong> 前，總名額未滿 ${esc(totalQuota)} 人時可繼續報名，超過列為候補。</li>
           </ul>`;
       } catch (err) {
         el.innerHTML = '<p style="color:#b5a898;">無法取得報名規則，請稍後再試。</p>';
