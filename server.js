@@ -56,7 +56,7 @@ const upload = multer({
 // 知識庫文書上傳：memory storage（不落盤，抽取文字後直接進 knowledge 表）
 const uploadKnowledgeMemory = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024, files: 5 }
+  limits: { fileSize: 20 * 1024 * 1024, files: 5 }
 });
 
 function startServer() {
@@ -1052,7 +1052,18 @@ function startServer() {
   });
 
   // 上傳文書檔案（Word/Excel/PDF/TXT）→ 抽取文字 → 分段寫入 knowledge 表
-  app.post('/api/admin/knowledge/upload', authMiddleware, requirePerm('settings'), uploadKnowledgeMemory.array('files', 5), async (req, res) => {
+  // multer 錯誤（超過 20MB / 超過 5 檔）獨立處理，避免落入全域錯誤 handler 回「伺服器錯誤」
+  app.post('/api/admin/knowledge/upload', authMiddleware, requirePerm('settings'), (req, res, next) => {
+    uploadKnowledgeMemory.array('files', 5)(req, res, (err) => {
+      if (err) {
+        if (err.code === 'LIMIT_FILE_SIZE') return res.status(400).json({ error: '檔案過大：單檔不可超過 20MB' });
+        if (err.code === 'LIMIT_FILE_COUNT') return res.status(400).json({ error: '一次最多上傳 5 個檔案' });
+        console.error('Upload multer error:', err);
+        return res.status(400).json({ error: '上傳失敗：' + err.message });
+      }
+      next();
+    });
+  }, async (req, res) => {
     try {
       const files = req.files || [];
       if (!files.length) return res.status(400).json({ error: '請選擇要上傳的檔案' });

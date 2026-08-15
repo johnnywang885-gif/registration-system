@@ -213,7 +213,7 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 - `GET /api/admin/feedback` / `PUT /api/admin/feedback/:id` — list (open first, newest first) / toggle open↔done (admin only)
 - `POST /api/admin/line-announce` — push a message to the LINE group the bot joined (admin only; 501 if LINE not configured)
 - `GET /api/admin/knowledge` / `POST /api/admin/knowledge` / `PUT /api/admin/knowledge/:id` / `POST /api/admin/knowledge/:id/toggle` / `DELETE /api/admin/knowledge/:id` — AI 知識庫 CRUD（bot 問答第 1 層資料，admin only; toggle 切換啟用/停用）
-- `POST /api/admin/knowledge/upload` — 上傳文書檔案建知識（admin only; multipart `files` 欄位多選 ≤5 檔、每檔 ≤10MB；支援 .pdf/.docx/.xls/.xlsx/.txt，`knowledge_import.js` 抽取文字、>2500 字自動分段多筆、Excel 逐工作表一筆；單檔失敗不中斷其餘，200 + `details` 逐檔回報；掃描 PDF/空白檔回 failed 細節）
+- `POST /api/admin/knowledge/upload` — 上傳文書檔案建知識（admin only; multipart `files` 欄位多選 ≤5 檔、每檔 ≤20MB；支援 .pdf/.docx/.xls/.xlsx/.txt，`knowledge_import.js` 抽取文字、>2500 字自動分段多筆、Excel 逐工作表一筆；單檔失敗不中斷其餘，200 + `details` 逐檔回報；掃描 PDF/空白檔回 failed 細節）
 - `GET /api/admin/line-sources` — list LINE 彙整 sources (`line_sources` + per-source message counts; admin only)
 - `GET /api/admin/line-diag` — webhook 送達診斷（admin；`recordWebhookDiag()` 在每次 webhook POST 把計數寫進 settings：`webhook_pings`/`webhook_events`/`webhook_rejected`/`webhook_last_at`/`webhook_last_types`/`webhook_last_sources`，另有 `line_group_id`），回應含 `line_sources`/`line_messages` 筆數；UI 在 LINE 彙整 tab「Webhook 診斷」按鈕——測試法：記下收件總數→群組傳訊息→再查，數字不動代表 LINE 主控台沒把事件送到本系統（查「使用 Webhook」開關/URL）
 - `POST /api/admin/line-sources/refresh` — re-fetch source names from LINE (group summary / profile APIs) **並且同步群組全部成員進 `line_sources`（＝announce/sync）**（admin only; failures keep old values）
