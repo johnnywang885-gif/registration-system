@@ -75,6 +75,11 @@
       const clubId = document.getElementById('clubId').value.trim();
       const password = document.getElementById('password').value;
       const errorMsg = document.getElementById('errorMsg');
+      const loginBtn = document.getElementById('loginBtn');
+
+      if (loginBtn.disabled) return;
+      loginBtn.disabled = true;
+      loginBtn.textContent = '登入中...';
 
       try {
         const res = await fetch('/api/login', {
@@ -88,6 +93,8 @@
         if (!res.ok) {
           errorMsg.textContent = data.error;
           errorMsg.classList.remove('hidden');
+          loginBtn.disabled = false;
+          loginBtn.textContent = '登入';
           return;
         }
 
@@ -102,6 +109,8 @@
       } catch (err) {
         errorMsg.textContent = '連線失敗，請稍後再試';
         errorMsg.classList.remove('hidden');
+        loginBtn.disabled = false;
+        loginBtn.textContent = '登入';
       }
     });
   </script>

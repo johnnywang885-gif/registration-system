@@ -687,7 +687,7 @@
         const currentVal = filterClub.value;
         filterClub.innerHTML = '<option value="">全部</option>';
         data.filter(c => !c.is_admin && !c.admin_perms).forEach(c => {
-          filterClub.innerHTML += `<option value="${c.club_id}">${c.club_id} ${c.club_name}</option>`;
+          filterClub.innerHTML += `<option value="${c.club_id}">${c.club_id} ${esc(c.club_name)}</option>`;
         });
         filterClub.value = currentVal;
 
@@ -1013,15 +1013,23 @@
 
     async function importDefaultClubs() {
       if (!confirm('確定要匯入 31 個預設社團？')) return;
-      await fetch('/api/admin/import-clubs', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({ clubs: defaultClubs })
-      });
-      loadClubs();
+      try {
+        const res = await fetch('/api/admin/import-clubs', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({ clubs: defaultClubs })
+        });
+        if (res.status === 401) { localStorage.clear(); window.location.href = '/'; return; }
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { toast(data.error || '匯入失敗，請稍後再試', 'error'); return; }
+        toast(data.message || '已匯入預設社團', 'success');
+        loadClubs();
+      } catch (err) {
+        toast('匯入失敗，請稍後再試', 'error');
+      }
     }
 
     const phaseLabels = {
@@ -1628,9 +1636,9 @@
               <b>收件總數（ping）</b>：${q.webhook_pings || 0} 次 &nbsp;｜&nbsp;
               <b>事件總數</b>：${q.webhook_events || 0} 個 &nbsp;｜&nbsp;
               <b>簽章拒絕</b>：${q.webhook_rejected || 0} 次<br>
-              <b>最後收到事件</b>：${fmt(q.webhook_last_at)}（類型：${q.webhook_last_types || '(無)'}）<br>
-              <b>最後事件來源</b>：${q.webhook_last_sources || '(無)'}<br>
-              <b>主群組 ID</b>：${q.line_group_id || '(尚未記錄)'}<br>
+              <b>最後收到事件</b>：${fmt(q.webhook_last_at)}（類型：${esc(q.webhook_last_types || '(無)')}）<br>
+              <b>最後事件來源</b>：${esc(q.webhook_last_sources || '(無)')}<br>
+              <b>主群組 ID</b>：${esc(q.line_group_id || '(尚未記錄)')}<br>
               <b>line_sources</b>：群組 ${d.line_sources.groups} 個、個別社 ${d.line_sources.users} 個<br>
               <b>line_messages</b>：群組 ${d.line_messages.groups} 則、個別社 ${d.line_messages.users} 則（最後 ${fmt(d.line_messages.last)}）
             </div>
