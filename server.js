@@ -1358,11 +1358,13 @@ function startServer() {
   const ANNOUNCE_IMAGE_MIME = { 'image/png': 1, 'image/jpeg': 1, 'image/webp': 1, 'image/gif': 1 };
   const ANNOUNCE_IMAGE_MAX = 5;
   const ANNOUNCE_IMAGE_MAX_BYTES = 2 * 1024 * 1024;
+  const ANNOUNCE_IMAGE_TOTAL_BYTES = 6 * 1024 * 1024; // base64 後約 8MB，需低於 express.json 10mb 限制
   app.post('/api/admin/announce/generate', authMiddleware, requirePerm('announce'), async (req, res) => {
     try {
       const raw = req.body && req.body.raw ? String(req.body.raw).trim() : '';
       const instructions = req.body && req.body.instructions ? String(req.body.instructions).trim() : '';
       const images = [];
+      let imageTotalBytes = 0;
       if (req.body && Array.isArray(req.body.images)) {
         if (req.body.images.length > ANNOUNCE_IMAGE_MAX) {
           return res.status(400).json({ error: `圖片最多 ${ANNOUNCE_IMAGE_MAX} 張` });
@@ -1383,8 +1385,13 @@ function startServer() {
           if (!ANNOUNCE_IMAGE_MIME[mime]) {
             return res.status(400).json({ error: '圖片格式不支援（僅限 PNG / JPG / WebP / GIF）' });
           }
-          if (Buffer.from(data, 'base64').length > ANNOUNCE_IMAGE_MAX_BYTES) {
+          const bytes = Buffer.from(data, 'base64').length;
+          if (bytes > ANNOUNCE_IMAGE_MAX_BYTES) {
             return res.status(400).json({ error: '單張圖片不可超過 2MB' });
+          }
+          imageTotalBytes += bytes;
+          if (imageTotalBytes > ANNOUNCE_IMAGE_TOTAL_BYTES) {
+            return res.status(400).json({ error: '圖片總量不可超過 6MB（base64 編碼後超過伺服器限制）' });
           }
           images.push({ mimeType: mime, data });
         }

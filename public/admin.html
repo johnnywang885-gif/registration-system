@@ -365,6 +365,11 @@
         document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
         firstVisible.classList.add('active');
         document.getElementById(`tab-${firstVisible.dataset.tab}`).classList.add('active');
+        // 首個可見頁籤也要觸發對應載入（否則 standby/feedback/linedigest 等畫面會空白）
+        const firstTab = firstVisible.dataset.tab;
+        if (firstTab === 'standby') loadStandbyList();
+        if (firstTab === 'feedback') loadFeedback();
+        if (firstTab === 'linedigest') loadLineSources();
       }
       document.getElementById('adminAccountsSection').style.display = 'none';
     }
@@ -414,6 +419,17 @@
       btn.setAttribute('aria-label', show ? '隱藏密碼' : '顯示密碼');
       btn.title = show ? '隱藏密碼' : '顯示密碼';
     }
+
+    // 統一 401 處理：登入過期/未登入一律清除憑證回登入頁（涵蓋所有 fetch 呼叫點）
+    const _origFetch = window.fetch;
+    window.fetch = async (...args) => {
+      const res = await _origFetch(...args);
+      if (res.status === 401) {
+        localStorage.clear();
+        window.location.href = '/';
+      }
+      return res;
+    };
 
     function westernToROC(dateStr) {
       if (!dateStr) return '';
@@ -1103,18 +1119,22 @@
       msg.textContent = '';
       if (!current || !next) { msg.textContent = '請填寫完整'; return; }
       if (next.length < 8) { msg.textContent = '新密碼至少 8 碼'; return; }
-      const res = await fetch('/api/admin/change-password', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body: JSON.stringify({ currentPassword: current, newPassword: next })
-      });
-      const data = await res.json();
-      if (res.ok) {
-        msg.textContent = '✓ 密碼已更新';
-        document.getElementById('cpCurrent').value = '';
-        document.getElementById('cpNew').value = '';
-      } else {
-        msg.textContent = data.error || '更新失敗';
+      try {
+        const res = await fetch('/api/admin/change-password', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify({ currentPassword: current, newPassword: next })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          msg.textContent = '✓ 密碼已更新';
+          document.getElementById('cpCurrent').value = '';
+          document.getElementById('cpNew').value = '';
+        } else {
+          msg.textContent = data.error || '更新失敗';
+        }
+      } catch (err) {
+        msg.textContent = '更新失敗，請稍後再試';
       }
     });
 
@@ -1186,18 +1206,22 @@
       const msg = document.getElementById('kbMsg');
       if (!title || !content) { msg.textContent = '請填寫標題與內容'; return; }
       const url = editingKbId ? `/api/admin/knowledge/${editingKbId}` : '/api/admin/knowledge';
-      const res = await fetch(url, {
-        method: editingKbId ? 'PUT' : 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body: JSON.stringify({ title, content })
-      });
-      const data = await res.json();
-      if (res.ok) {
-        msg.textContent = editingKbId ? '✓ 已更新' : '✓ 已新增';
-        resetKnowledgeForm();
-        loadKnowledge();
-      } else {
-        msg.textContent = data.error || '儲存失敗';
+      try {
+        const res = await fetch(url, {
+          method: editingKbId ? 'PUT' : 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify({ title, content })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          msg.textContent = editingKbId ? '✓ 已更新' : '✓ 已新增';
+          resetKnowledgeForm();
+          loadKnowledge();
+        } else {
+          msg.textContent = data.error || '儲存失敗';
+        }
+      } catch (err) {
+        msg.textContent = '儲存失敗，請稍後再試';
       }
     }
 
@@ -1243,15 +1267,19 @@
 
     async function deleteKnowledge(id) {
       if (!confirm('確定要刪除這筆知識資料？')) return;
-      const res = await fetch(`/api/admin/knowledge/${id}`, {
-        method: 'DELETE',
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      const data = await res.json();
-      toast(data.message || data.error || (res.ok ? '已刪除' : '刪除失敗'), res.ok ? 'success' : 'error');
-      if (res.ok) {
-        if (editingKbId === id) resetKnowledgeForm();
-        loadKnowledge();
+      try {
+        const res = await fetch(`/api/admin/knowledge/${id}`, {
+          method: 'DELETE',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        const data = await res.json();
+        toast(data.message || data.error || (res.ok ? '已刪除' : '刪除失敗'), res.ok ? 'success' : 'error');
+        if (res.ok) {
+          if (editingKbId === id) resetKnowledgeForm();
+          loadKnowledge();
+        }
+      } catch (err) {
+        toast('刪除失敗，請稍後再試', 'error');
       }
     }
 
@@ -1259,14 +1287,18 @@
       const filename = btn.dataset.f;
       if (!filename) return;
       if (!confirm(`確定要刪除「${filename}」這整個檔案（含其全部段落/工作表知識）？`)) return;
-      const res = await fetch('/api/admin/knowledge/delete-file', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body: JSON.stringify({ filename })
-      });
-      const data = await res.json();
-      toast(data.message || data.error || (res.ok ? '已刪除' : '刪除失敗'), res.ok ? 'success' : 'error');
-      if (res.ok) loadKnowledge();
+      try {
+        const res = await fetch('/api/admin/knowledge/delete-file', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify({ filename })
+        });
+        const data = await res.json();
+        toast(data.message || data.error || (res.ok ? '已刪除' : '刪除失敗'), res.ok ? 'success' : 'error');
+        if (res.ok) loadKnowledge();
+      } catch (err) {
+        toast('刪除失敗，請稍後再試', 'error');
+      }
     }
 
     function toggleKbFile(btn, idx) {
@@ -1761,9 +1793,15 @@
 
     const ANNOUNCE_IMAGE_MAX = 5;
     const ANNOUNCE_IMAGE_MAX_BYTES = 2 * 1024 * 1024;
+    const ANNOUNCE_IMAGE_TOTAL_BYTES = 6 * 1024 * 1024; // 總量上限（base64 後約 8MB，避免超過伺服器 10mb body 限制）
     let announceImages = [];
 
+    function announceImageTotalBytes() {
+      return announceImages.reduce((sum, img) => sum + Math.floor(String(img.data || '').length * 3 / 4), 0);
+    }
+
     function announceAddFiles(files) {
+      let total = announceImageTotalBytes();
       for (const file of files) {
         if (!file.type || !file.type.startsWith('image/')) {
           toast('不支援的檔案格式：' + (file.name || '未知') + '（僅限圖片）', 'error');
@@ -1777,6 +1815,11 @@
           toast('圖片最多 ' + ANNOUNCE_IMAGE_MAX + ' 張', 'error');
           break;
         }
+        if (total + file.size > ANNOUNCE_IMAGE_TOTAL_BYTES) {
+          toast('圖片總量不可超過 6MB（' + file.name + ' 未加入）', 'error');
+          continue;
+        }
+        total += file.size;
         const reader = new FileReader();
         reader.onload = () => {
           const dataUrl = String(reader.result || '');
@@ -1861,11 +1904,16 @@
       });
     })();
 
+    let announceBusy = new Set(); // 防連點：進行中的操作 key
+
     async function runAnnounceGenerate() {
+      if (announceBusy.has('generate')) return;
       const raw = document.getElementById('annRaw').value.trim();
       const instructions = document.getElementById('annInstructions').value.trim();
       const msg = document.getElementById('annMsg');
       if (!raw && announceImages.length === 0) { toast('請先貼上原始資料或上傳圖片', 'error'); return; }
+      if (announceImageTotalBytes() > ANNOUNCE_IMAGE_TOTAL_BYTES) { toast('圖片總量不可超過 6MB', 'error'); return; }
+      announceBusy.add('generate');
       document.getElementById('loadingAnnounce').classList.remove('hidden');
       msg.textContent = 'AI 產生中（約 10-30 秒）...';
       try {
@@ -1884,6 +1932,7 @@
       } catch (err) {
         toast('產生失敗: ' + err.message, 'error');
       } finally {
+        announceBusy.delete('generate');
         document.getElementById('loadingAnnounce').classList.add('hidden');
         msg.textContent = '';
       }
@@ -1972,8 +2021,10 @@
     }
 
     async function sendAnnounceGroup() {
+      if (announceBusy.has('sendGroup')) return;
       const text = document.getElementById('annBroadcast').value.trim();
       if (!text) { toast('公告內容為空', 'error'); return; }
+      announceBusy.add('sendGroup');
       try {
         const res = await fetch('/api/admin/announce/send', {
           method: 'POST',
@@ -1983,15 +2034,19 @@
         const data = await res.json();
         toast(data.message || data.error, res.ok ? 'success' : 'error');
       } catch (err) { toast('傳送失敗: ' + err.message, 'error'); }
+      finally { announceBusy.delete('sendGroup'); }
     }
 
     async function sendAnnounceClub(i) {
+      const key = 'club' + i;
+      if (announceBusy.has(key)) return;
       const sel = document.getElementById('annTarget' + i);
       const targetVal = sel && sel.value;
       if (!targetVal || !targetVal.includes('|')) { toast('此社未指定傳送對象', 'error'); return; }
       const parts = targetVal.split('|');
       const it = announceState.items[i];
       const text = document.querySelectorAll('.annMsgText')[i].value.trim();
+      announceBusy.add(key);
       try {
         const res = await fetch('/api/admin/announce/send', {
           method: 'POST',
@@ -2004,12 +2059,15 @@
         const data = await res.json();
         document.getElementById('annClubResult' + i).textContent = res.ok ? '✓ 已傳送' : (data.error || '傳送失敗');
       } catch (err) { toast('傳送失敗: ' + err.message, 'error'); }
+      finally { announceBusy.delete(key); }
     }
 
     async function sendAnnounceClubs() {
+      if (announceBusy.has('sendClubs')) return;
       const items = collectAnnounceItems();
       if (items.length === 0) { toast('沒有已指定傳送對象的社團', 'error'); return; }
       if (!confirm('確認傳送給 ' + items.length + ' 社？')) return;
+      announceBusy.add('sendClubs');
       try {
         const res = await fetch('/api/admin/announce/send', {
           method: 'POST',
@@ -2021,6 +2079,7 @@
         data.delivered.forEach(d => toast('✓ ' + d.club_name + ' 已傳送', 'success'));
         if (data.failed.length) toast('失敗 ' + data.failed.map(f => f.club_name).join('、'), 'error');
       } catch (err) { toast('傳送失敗: ' + err.message, 'error'); }
+      finally { announceBusy.delete('sendClubs'); }
     }
 
     // Init

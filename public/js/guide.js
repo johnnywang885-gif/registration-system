@@ -156,8 +156,15 @@
       spotlight.style.height = '0';
     }
 
+    // 先暫時顯示再量尺寸：hidden=display:none 時量到的寬高都是 0，tooltip 會錯位
+    const wasHidden = tooltip.classList.contains('hidden');
+    if (wasHidden) {
+      tooltip.classList.remove('hidden');
+      tooltip.style.visibility = 'hidden';
+    }
     const tooltipH = tooltip.offsetHeight;
     const tooltipW = tooltip.offsetWidth;
+    if (wasHidden) tooltip.style.visibility = '';
     const gap = 56;
     const placement = step.placement || 'bottom';
     const prefersTop = placement === 'top';
