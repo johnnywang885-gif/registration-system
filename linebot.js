@@ -222,39 +222,55 @@ async function geminiRequest(system, userText, options = {}) {
     payload.tools = [{ googleSearch: {} }];
   }
 
-  const doRequest = async (p) => {
-    try {
-      const res = await fetch(`${GEMINI_API}?key=${GEMINI_API_KEY}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(p)
-      });
-      if (!res.ok) {
-        let errBody = '';
-        try { errBody = await res.text(); } catch (_) {}
-        console.error('Gemini API error:', res.status, errBody.slice(0, 500));
-        return { ok: false, status: res.status, usedGrounding: false, sources: [] };
-      }
-      const data = await res.json();
-      const cand = data.candidates && data.candidates[0];
-      const text = cand && cand.content && cand.content.parts
-        ? cand.content.parts.map(part => part.text || '').join('')
-        : null;
-      let usedGrounding = false;
-      let sources = [];
-      if (cand && cand.groundingMetadata) {
-        usedGrounding = true;
-        if (Array.isArray(cand.groundingMetadata.groundingChunks)) {
-          sources = cand.groundingMetadata.groundingChunks
-            .filter(c => c && c.web && c.web.uri)
-            .map(c => ({ uri: c.web.uri, title: c.web.title || '' }));
+  const doRequest = async (p, retries = 3) => {
+    for (let attempt = 0; attempt < retries; attempt++) {
+      try {
+        const res = await fetch(`${GEMINI_API}?key=${GEMINI_API_KEY}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(p)
+        });
+        if (res.status === 429) {
+          let errBody = '';
+          try { errBody = await res.text(); } catch (_) {}
+          const retryMatch = errBody.match(/retry in ([\d.]+)s/i);
+          const waitSec = retryMatch ? parseFloat(retryMatch[1]) : (attempt + 1) * 10;
+          if (attempt < retries - 1) {
+            console.error('Gemini 429 rate limit, retry in', waitSec, 's (attempt', attempt + 1, '/', retries, ')');
+            await new Promise(r => setTimeout(r, waitSec * 1000));
+            continue;
+          }
+          console.error('Gemini 429 exhausted after', retries, 'retries');
+          return { ok: false, status: 429, usedGrounding: false, sources: [] };
         }
+        if (!res.ok) {
+          let errBody = '';
+          try { errBody = await res.text(); } catch (_) {}
+          console.error('Gemini API error:', res.status, errBody.slice(0, 500));
+          return { ok: false, status: res.status, usedGrounding: false, sources: [] };
+        }
+        const data = await res.json();
+        const cand = data.candidates && data.candidates[0];
+        const text = cand && cand.content && cand.content.parts
+          ? cand.content.parts.map(part => part.text || '').join('')
+          : null;
+        let usedGrounding = false;
+        let sources = [];
+        if (cand && cand.groundingMetadata) {
+          usedGrounding = true;
+          if (Array.isArray(cand.groundingMetadata.groundingChunks)) {
+            sources = cand.groundingMetadata.groundingChunks
+              .filter(c => c && c.web && c.web.uri)
+              .map(c => ({ uri: c.web.uri, title: c.web.title || '' }));
+          }
+        }
+        return { ok: true, text: text ? text.trim() : null, usedGrounding, sources };
+      } catch (err) {
+        console.error('Gemini request error:', err.message);
+        return { ok: false, status: -1, usedGrounding: false, sources: [] };
       }
-      return { ok: true, text: text ? text.trim() : null, usedGrounding, sources };
-    } catch (err) {
-      console.error('Gemini request error:', err.message);
-      return { ok: false, status: -1, usedGrounding: false, sources: [] };
     }
+    return { ok: false, status: -1, usedGrounding: false, sources: [] };
   };
 
   if (groundingOn) {
@@ -387,7 +403,7 @@ async function generateAnnouncement(rawData, instructions, mode, images) {
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const text = await callGemini(system, prompt + (attempt > 0 ? '\n\n再次提醒：只輸出 JSON 陣列，不要加入任何其他說明文字。' : ''), { maxOutputTokens: 3000, images });
-        if (!text) { console.error('generateAnnouncement[clubs] Gemini returned null, attempt:', attempt); return null; }
+        if (!text) { console.error('generateAnnouncement[clubs] Gemini returned null, attempt:', attempt); if (attempt === 0) await new Promise(r => setTimeout(r, 10000)); return null; }
         const items = parseClubAnnouncements(text, rawData, !!(images && images.length));
         if (items) return items;
       } catch (err) {

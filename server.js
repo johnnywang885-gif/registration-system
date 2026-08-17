@@ -1362,10 +1362,8 @@ function startServer() {
       if (!raw && images.length === 0) return res.status(400).json({ error: '請貼上原始資料或上傳圖片' });
       if (raw.length > 8000) return res.status(400).json({ error: '原始資料過長（上限 8000 字）' });
 
-      const [broadcast, perClub] = await Promise.all([
-        generateAnnouncement(raw, instructions, 'group', images),
-        generateAnnouncement(raw, instructions, 'clubs', images)
-      ]);
+      const broadcast = await generateAnnouncement(raw, instructions, 'group', images);
+      const perClub = await generateAnnouncement(raw, instructions, 'clubs', images);
       console.log('Announce result: broadcast=' + (broadcast ? broadcast.length + 'chars' : 'null') + ' perClub=' + (perClub ? perClub.length + 'items' : 'null') + ' images=' + images.length);
       if (!broadcast && !perClub) return res.status(500).json({ error: 'AI 公告產生失敗，請稍後再試（或確認 Gemini 已設定）' });
       res.json({ broadcast, perClub: perClub || [] });
