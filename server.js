@@ -28,6 +28,18 @@ const loginLimiter = rateLimit({
   message: { error: '嘗試次數過多，請 15 分鐘後再試' }
 });
 
+// 過濾系統內部設定（jwt_secret 等），避免洩漏給非系統管理員或公開 API
+function sanitizeSettings(settings, options = {}) {
+  const { publicOnly = false } = options;
+  const out = {};
+  for (const [key, value] of Object.entries(settings)) {
+    if (key === 'jwt_secret') continue;
+    if (publicOnly && (key.startsWith('grounding_') || key.startsWith('webhook_'))) continue;
+    out[key] = value;
+  }
+  return out;
+}
+
 // LINE webhook 防灌水（LINE 正常傳送不會達到此量級；超限時 LINE 會自行重試）
 const webhookLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -251,7 +263,7 @@ function startServer() {
       const phase2Total = await getOne("SELECT COUNT(*) as cnt FROM registrations WHERE phase = 2 AND status != 'forfeited'");
 
       res.json({
-        settings,
+        settings: sanitizeSettings(settings, { publicOnly: true }),
         summary,
         today: taipeiToday(),
         phase1Total: phase1Total?.cnt || 0,
@@ -417,13 +429,24 @@ function startServer() {
       if (!proof) return res.status(404).json({ error: '檔案不存在' });
 
       const isAdmin = req.user.isAdmin === 1 || req.user.isAdmin === true;
+      const isSuper = req.user.superAdmin === true || (isAdmin && !Array.isArray(req.user.perms));
+      const hasPaymentPerm = isSuper || (Array.isArray(req.user.perms) && req.user.perms.includes('payments'));
       if (!isAdmin && Number(proof.club_id) !== Number(req.user.clubId)) {
         return res.status(403).json({ error: '無權限存取此檔案' });
       }
+      if (isAdmin && Number(proof.club_id) !== Number(req.user.clubId) && !hasPaymentPerm) {
+        return res.status(403).json({ error: '無此功能權限' });
+      }
 
-      const filePath = path.join(__dirname, proof.file_path.replace(/^\//, ''));
-      if (!fs.existsSync(filePath)) return res.status(404).json({ error: '檔案已不存在' });
-      res.sendFile(filePath);
+      // 路徑 containment：只允許 uploads/ 下的檔案
+      const rawPath = String(proof.file_path || '').replace(/^[\\/]+/, '');
+      const resolvedPath = path.resolve(__dirname, rawPath);
+      const uploadsRoot = path.resolve(__dirname, 'uploads');
+      if (!resolvedPath.startsWith(uploadsRoot + path.sep)) {
+        return res.status(403).json({ error: '無效的檔案路徑' });
+      }
+      if (!fs.existsSync(resolvedPath)) return res.status(404).json({ error: '檔案已不存在' });
+      res.sendFile(resolvedPath);
     } catch (err) {
       console.error('Load payment file error:', err.message);
       res.status(500).json({ error: '載入檔案失敗' });
@@ -651,12 +674,13 @@ function startServer() {
     try {
       const { club_id, club_name, password } = req.body;
       if (!club_id || !club_name) return res.status(400).json({ error: '請輸入社號和社名' });
+      if (!/^\d+$/.test(String(club_id)) || Number(club_id) <= 0) return res.status(400).json({ error: '社號需為正整數' });
 
       const defaultPwd = password || String(club_id).slice(-4);
       const hash = bcrypt.hashSync(defaultPwd, 10);
 
-      await insert("INSERT OR REPLACE INTO clubs (club_id, club_name, password, is_admin) VALUES (?, ?, ?, 0)",
-        [parseInt(club_id), club_name, hash]);
+      await runQuery("INSERT INTO clubs (club_id, club_name, password, is_admin) VALUES (?, ?, ?, 0) ON CONFLICT(club_id) DO UPDATE SET club_name = excluded.club_name, password = excluded.password WHERE is_admin = 0 AND (admin_perms IS NULL OR admin_perms = '')",
+        [Number(club_id), club_name, hash]);
       res.json({ message: '新增成功' });
     } catch (err) {
       console.error('Club add error:', err.message);
@@ -690,7 +714,7 @@ function startServer() {
       const { password } = req.body;
       const defaultPwd = password || String(req.params.id).slice(-4);
       const hash = bcrypt.hashSync(defaultPwd, 10);
-      await runQuery("UPDATE clubs SET password = ? WHERE club_id = ?", [hash, parseInt(req.params.id)]);
+      await runQuery("UPDATE clubs SET password = ? WHERE club_id = ? AND is_admin = 0 AND (admin_perms IS NULL OR admin_perms = '')", [hash, parseInt(req.params.id)]);
       res.json({ message: '密碼已重設' });
     } catch (err) {
       console.error('Club reset password error:', err.message);
@@ -828,7 +852,7 @@ function startServer() {
       const quota = parseInt(settings.phase1_total_quota || '160');
       const current = await occupancy(getDb());
       res.json({
-        ...settings,
+        ...sanitizeSettings(settings),
         derived_phase: phaseState(settings, today),
         today,
         occupancy: current,
@@ -882,7 +906,7 @@ function startServer() {
         clubs,
         registrations,
         payment_proofs: paymentProofs,
-        settings,
+        settings: settings.filter(s => s.key !== 'jwt_secret'),
         feedback,
         line_messages: lineMessages,
         line_sources: lineSources,
@@ -921,11 +945,13 @@ function startServer() {
         "DELETE FROM clubs WHERE is_admin = 0"
       ], 'write');
 
-      // Restore clubs
-      const clubStmts = backup.clubs.map(c => ({
-        sql: "INSERT OR REPLACE INTO clubs (club_id, club_name, password, is_admin, admin_perms) VALUES (?, ?, ?, ?, ?)",
-        args: [c.club_id, c.club_name, c.password, c.is_admin || 0, c.admin_perms || '']
-      }));
+      // Restore clubs（跳過系統管理員，現任 admin 一律保留；社號需為正整數）
+      const clubStmts = backup.clubs
+        .filter(c => c && Number(c.is_admin) !== 1 && /^\d+$/.test(String(c.club_id ?? '')) && Number(c.club_id) > 0 && c.club_name != null)
+        .map(c => ({
+          sql: "INSERT OR REPLACE INTO clubs (club_id, club_name, password, is_admin, admin_perms) VALUES (?, ?, ?, ?, ?)",
+          args: [c.club_id, c.club_name, c.password, c.is_admin || 0, c.admin_perms || '']
+        }));
       if (clubStmts.length > 0) await dbConn.batch(clubStmts, 'write');
 
       // Restore registrations
@@ -935,9 +961,11 @@ function startServer() {
       }));
       if (regStmts.length > 0) await dbConn.batch(regStmts, 'write');
 
-      // Restore payment proofs
+      // Restore payment proofs（file_path 需為 uploads/ 下的相對路徑，防路徑穿透）
       if (backup.payment_proofs && backup.payment_proofs.length > 0) {
-        const ppStmts = backup.payment_proofs.map(p => ({
+        const ppStmts = backup.payment_proofs
+          .filter(p => p && typeof p.file_path === 'string' && !p.file_path.includes('..') && !p.file_path.startsWith('/') && !/^[a-zA-Z]:[\\/]/.test(p.file_path) && p.file_path.startsWith('uploads/'))
+          .map(p => ({
           sql: "INSERT OR REPLACE INTO payment_proofs (id, registration_id, club_id, file_path, file_type, file_name, status, reviewed_by, reviewed_at, uploaded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
           args: [p.id, p.registration_id, p.club_id, p.file_path, p.file_type, p.file_name || '', p.status || 'pending', p.reviewed_by || null, p.reviewed_at || null, p.uploaded_at || null]
         }));
@@ -946,7 +974,9 @@ function startServer() {
 
       // Restore settings
       if (backup.settings && backup.settings.length > 0) {
-        const settStmts = backup.settings.map(s => ({
+        const settStmts = backup.settings
+          .filter(s => s && s.key !== 'jwt_secret')
+          .map(s => ({
           sql: "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
           args: [s.key, s.value]
         }));

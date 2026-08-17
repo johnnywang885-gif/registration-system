@@ -180,13 +180,14 @@ async function ensureKnowledgeSourceFileColumn() {
 
 async function importClubs(clubsData) {
   if (!Array.isArray(clubsData) || clubsData.length === 0) return 0;
-  const valid = clubsData.filter(c => c && c.club_id != null && c.club_name != null && String(c.club_name).trim() !== '');
+  const valid = clubsData.filter(c => c && c.club_id != null && c.club_name != null && String(c.club_name).trim() !== ''
+    && /^\d+$/.test(String(c.club_id)) && Number(c.club_id) > 0);
   if (valid.length === 0) return 0;
   const stmts = valid.map(club => {
     const defaultPwd = String(club.club_id).slice(-4);
     const hash = bcrypt.hashSync(defaultPwd, 10);
     return {
-      sql: "INSERT OR REPLACE INTO clubs (club_id, club_name, password, is_admin) VALUES (?, ?, ?, 0)",
+      sql: "INSERT INTO clubs (club_id, club_name, password, is_admin) VALUES (?, ?, ?, 0) ON CONFLICT(club_id) DO UPDATE SET club_name = excluded.club_name, password = excluded.password WHERE is_admin = 0 AND (admin_perms IS NULL OR admin_perms = '')",
       args: [club.club_id, String(club.club_name).trim(), hash]
     };
   });

@@ -79,7 +79,7 @@ async function main() {
   console.log('[C2-4] 僅白名單外 key → 400 OK');
 
   // M7: importClubs null guard（null/空值過濾，回傳有效筆數）
-  const { importClubs } = require('../database');
+  const { importClubs, getOne, runQuery } = require('../database');
   const n = await importClubs([null, { club_id: 9999, club_name: '測試社' }, { club_id: null, club_name: 'x' }, { club_id: 9998, club_name: '' }]);
   if (n !== 1) throw new Error('importClubs should import exactly 1 valid club, got ' + n);
   console.log('[M7] importClubs null guard：只匯入有效筆數 OK');
@@ -114,6 +114,82 @@ async function main() {
   const big = await r.json();
   if (r.status !== 400 || !String(big.error).includes('10MB')) throw new Error('payment oversize should 400 with 10MB msg, got ' + r.status + ' ' + big.error);
   console.log('[M2] 繳費上傳 >10MB → 明確 400 OK');
+
+  // 全域審查批1：S1 公開 API 不得洩漏 jwt_secret / grounding / webhook 計數器
+  await runQuery("INSERT OR REPLACE INTO settings (key, value) VALUES ('jwt_secret', 'TOP-SECRET'), ('grounding_2026-08', '100'), ('webhook_pings', '5')");
+  const pub = await (await fetch(`${BASE}/api/summary`)).json();
+  if (pub.settings.jwt_secret || pub.settings['grounding_2026-08'] || pub.settings.webhook_pings) throw new Error('/api/summary must not leak internal settings');
+  const admSettings = await (await fetch(`${BASE}/api/admin/settings`, { headers: auth })).json();
+  if (admSettings.jwt_secret) throw new Error('/api/admin/settings must not leak jwt_secret');
+  const backupRes = await fetch(`${BASE}/api/admin/backup`, { headers: auth });
+  const backupData = await backupRes.json();
+  if (backupData.settings.some(x => x.key === 'jwt_secret')) throw new Error('backup must not contain jwt_secret');
+  console.log('[S1] summary/settings/backup 不洩漏 jwt_secret OK');
+
+  // S2: reset-password 不得動到系統管理員（club_id=0）
+  r = await fetch(`${BASE}/api/admin/clubs/0/reset-password`, {
+    method: 'PUT', headers: auth,
+    body: JSON.stringify({ password: 'hacked123' })
+  });
+  if (r.status !== 200) throw new Error('reset-password should 200, got ' + r.status);
+  r = await fetch(`${BASE}/api/login`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ clubId: 'admin', password: 'admin123' })
+  });
+  if (!r.ok) throw new Error('admin password must NOT be reset by clubs reset-password');
+  console.log('[S2] reset-password 無法重設系統管理員密碼 OK');
+
+  // S3: importClubs / POST clubs 不得覆寫管理帳號（club_id=0 / 非正整數）
+  const importN = await importClubs([{ club_id: 0, club_name: 'BAD' }, { club_id: 'abc', club_name: 'x' }, { club_id: -5, club_name: 'y' }]);
+  if (importN !== 0) throw new Error('invalid club rows should be filtered, got ' + importN);
+  const adminRow = await getOne("SELECT club_id, club_name, is_admin FROM clubs WHERE club_id = 0");
+  if (!adminRow || adminRow.club_name === 'BAD' || Number(adminRow.is_admin) !== 1) throw new Error('admin row must survive importClubs');
+  r = await fetch(`${BASE}/api/admin/clubs`, {
+    method: 'POST', headers: auth,
+    body: JSON.stringify({ club_id: 0, club_name: 'EVIL' })
+  });
+  if (r.status !== 400) throw new Error('POST clubs with club_id=0 should 400, got ' + r.status);
+  console.log('[S3] importClubs/POST clubs 無法覆寫管理帳號 OK');
+
+  // S1d: restore 不得還原 jwt_secret / is_admin=1 帳號 / 惡意 file_path
+  const evilBackup = {
+    clubs: [{ club_id: 0, club_name: 'EVIL-ADMIN', password: 'x', is_admin: 1 },
+            { club_id: 5001, club_name: '正常社', password: 'x', is_admin: 0 }],
+    registrations: [],
+    payment_proofs: [{ id: 999, registration_id: 1, club_id: 5001, file_path: '../server.js', file_type: 'x', file_name: 'x', status: 'pending' }],
+    settings: [{ key: 'jwt_secret', value: 'HACKED' }, { key: 'bot_name', value: '測試' }]
+  };
+  r = await fetch(`${BASE}/api/admin/restore`, {
+    method: 'POST', headers: auth, body: JSON.stringify(evilBackup)
+  });
+  if (r.status !== 200) throw new Error('restore should 200, got ' + r.status);
+  const afterRestore = await getOne("SELECT club_id, club_name, is_admin FROM clubs WHERE club_id = 0");
+  if (afterRestore.club_name === 'EVIL-ADMIN') throw new Error('restore must not replace system admin');
+  const restoredSecret = await getOne("SELECT value FROM settings WHERE key = 'jwt_secret'");
+  if (restoredSecret && restoredSecret.value === 'HACKED') throw new Error('restore must not import jwt_secret');
+  const evilProof = await getOne("SELECT id FROM payment_proofs WHERE id = 999");
+  if (evilProof) throw new Error('restore must drop malicious file_path rows');
+  r = await fetch(`${BASE}/api/login`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ clubId: 'admin', password: 'admin123' })
+  });
+  if (!r.ok) throw new Error('admin must still log in after restore');
+  console.log('[S1d] restore 過濾 jwt_secret / 管理帳號 / 惡意路徑 OK');
+
+  // S4+S6: 付款檔案路徑 containment + 權限（admin 需 payments 權限才能讀他人檔案）
+  await runQuery("INSERT INTO registrations (club_id, position, name, phase, status) VALUES (5001, '社長', '測試', 1, 'registered')");
+  await runQuery("INSERT INTO payment_proofs (registration_id, club_id, file_path, file_type, file_name, status) VALUES ((SELECT id FROM registrations WHERE club_id = 5001), 5001, '../../server.js', 'image/png', 't.png', 'pending'), ((SELECT id FROM registrations WHERE club_id = 5001), 5001, 'uploads/payments/nope.png', 'image/png', 'n.png', 'pending')");
+  r = await fetch(`${BASE}/api/payment/file/1`, { headers: { 'Authorization': `Bearer ${token}` } });
+  if (r.status !== 403) throw new Error('traversal file_path should 403, got ' + r.status);
+  r = await fetch(`${BASE}/api/payment/file/2`, { headers: { 'Authorization': `Bearer ${token}` } });
+  if (r.status !== 404) throw new Error('valid path should reach existence check (404), got ' + r.status);
+  const noPayToken = generateToken({ club_id: 6001, club_name: '次管理', is_admin: 0, admin_perms: '["registrations"]' });
+  r = await fetch(`${BASE}/api/payment/file/2`, { headers: { 'Authorization': `Bearer ${noPayToken}` } });
+  if (r.status !== 403) throw new Error('sub-admin without payments perm should 403, got ' + r.status);
+  const payToken = generateToken({ club_id: 6002, club_name: '次管理2', is_admin: 0, admin_perms: '["payments"]' });
+  r = await fetch(`${BASE}/api/payment/file/2`, { headers: { 'Authorization': `Bearer ${payToken}` } });
+  if (r.status !== 404) throw new Error('sub-admin with payments perm should pass gate (404), got ' + r.status);
+  console.log('[S4/S6] 付款檔案路徑 containment＋payments 權限 OK');
 
   console.log('\n全部 PASS');
   process.exit(0);
