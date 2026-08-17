@@ -20,6 +20,14 @@ app.set('trust proxy', 1);
 app.use(express.json({ limit: '10mb', verify: (req, res, buf) => { req.rawBody = buf; } }));
 app.use(express.static(path.join(__dirname, 'public')));
 
+// 基礎安全回應標頭（無需額外依賴）
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'same-origin');
+  next();
+});
+
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
@@ -47,6 +55,24 @@ const webhookLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: '請求過於頻繁' }
+});
+
+// 一般寫入操作防灌水（每 IP 每分鐘）
+const writeLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: '請求過於頻繁，請稍後再試' }
+});
+
+// 上傳類（繳費證明/文書/匯入）較重，限額更低
+const uploadLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: '上傳過於頻繁，請稍後再試' }
 });
 
 const storage = multer.diskStorage({
@@ -78,6 +104,17 @@ const upload = multer({
 const uploadKnowledgeMemory = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 20 * 1024 * 1024, files: 5 }
+});
+
+// 社團 Excel 匯入：memory storage + 依副檔名放行（原 upload 只接受圖片/PDF，會擋掉 xlsx）
+const uploadXlsx = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const ext = path.extname(file.originalname || '').toLowerCase();
+    if (['.xlsx', '.xls'].includes(ext)) cb(null, true);
+    else cb(new Error('不支援的檔案格式，僅支援 XLSX/XLS'));
+  }
 });
 
 function startServer() {
@@ -187,7 +224,7 @@ function startServer() {
   });
 
   // ===== Feedback API =====
-  app.post('/api/feedback', authMiddleware, async (req, res) => {
+  app.post('/api/feedback', authMiddleware, writeLimiter, async (req, res) => {
     try {
       const { category, message } = req.body || {};
       const text = message ? String(message).trim() : '';
@@ -296,7 +333,7 @@ function startServer() {
     }
   });
 
-  app.post('/api/registrations', authMiddleware, async (req, res) => {
+  app.post('/api/registrations', authMiddleware, writeLimiter, async (req, res) => {
     try {
       const settings = await getSettings();
       const today = taipeiToday();
@@ -305,6 +342,11 @@ function startServer() {
 
       const { position, name, id_card, birthday, phone, meal_type } = req.body;
       if (!name) return res.status(400).json({ error: '請輸入姓名' });
+      // 欄位長度上限（避免惡意超長資料）
+      if (String(name).length > 50 || String(position || '').length > 50 || String(id_card || '').length > 30
+        || String(birthday || '').length > 20 || String(phone || '').length > 30 || String(meal_type || '').length > 20) {
+        return res.status(400).json({ error: '欄位內容過長' });
+      }
 
       let insertSql;
       let insertArgs;
@@ -353,6 +395,11 @@ function startServer() {
       }
 
       const { position, name, id_card, birthday, phone, meal_type } = req.body;
+      if (!name) return res.status(400).json({ error: '請輸入姓名' });
+      if (String(name).length > 50 || String(position || '').length > 50 || String(id_card || '').length > 30
+        || String(birthday || '').length > 20 || String(phone || '').length > 30 || String(meal_type || '').length > 20) {
+        return res.status(400).json({ error: '欄位內容過長' });
+      }
       await runQuery(
         "UPDATE registrations SET position = ?, name = ?, id_card = ?, birthday = ?, phone = ?, meal_type = ? WHERE id = ? AND club_id = ?",
         [position || '', name, id_card || '', birthday || '', phone || '', meal_type || '', req.params.id, req.user.clubId]
@@ -382,7 +429,7 @@ function startServer() {
   });
 
   // ===== Payment Proof API =====
-  app.post('/api/payment/upload', authMiddleware, (req, res, next) => {
+  app.post('/api/payment/upload', authMiddleware, uploadLimiter, (req, res, next) => {
     upload.single('file')(req, res, (err) => {
       if (err) {
         if (err.code === 'LIMIT_FILE_SIZE') return res.status(400).json({ error: '檔案過大：單檔不可超過 10MB' });
@@ -394,6 +441,17 @@ function startServer() {
   }, async (req, res) => {
     try {
       if (!req.file) return res.status(400).json({ error: '請選擇檔案' });
+
+      // 內容型別驗證（不信任客戶端 mimetype）：比對檔頭魔數
+      const buf = fs.readFileSync(req.file.path).subarray(0, 8);
+      const magicOk = (buf.length >= 3 && buf[0] === 0xFF && buf[1] === 0xD8 && buf[2] === 0xFF)
+        || (buf.length >= 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47 && buf[4] === 0x0D && buf[5] === 0x0A && buf[6] === 0x1A && buf[7] === 0x0A)
+        || (buf.length >= 4 && buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x38)
+        || (buf.length >= 4 && buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46);
+      if (!magicOk) {
+        fs.unlinkSync(req.file.path);
+        return res.status(400).json({ error: '檔案內容與格式不符（僅支援 JPG/PNG/GIF/PDF）' });
+      }
 
       const { registration_id } = req.body;
       const fileType = req.file.mimetype === 'application/pdf' ? 'pdf' : 'image';
@@ -609,21 +667,24 @@ function startServer() {
     try {
       const { action } = req.body;
       const newStatus = action === 'approve' ? 'approved' : 'rejected';
-      await runQuery(
-        "UPDATE payment_proofs SET status = ?, reviewed_by = ?, reviewed_at = datetime('now') WHERE id = ?",
-        [newStatus, req.user.clubId.toString(), req.params.id]
-      );
 
+      // 審核＋連帶更新報名狀態在同一個交易內完成（避免中途失敗造成狀態不一致）
       const proof = await getOne("SELECT * FROM payment_proofs WHERE id = ?", [req.params.id]);
+      if (!proof) return res.status(404).json({ error: '繳費證明不存在' });
 
-      if (action === 'approve') {
-        if (proof) {
-          await runQuery(
-            "UPDATE registrations SET status = 'paid' WHERE club_id = ? AND status = 'registered'",
-            [proof.club_id]
-          );
+      const stmts = [
+        {
+          sql: "UPDATE payment_proofs SET status = ?, reviewed_by = ?, reviewed_at = datetime('now') WHERE id = ?",
+          args: [newStatus, req.user.clubId.toString(), req.params.id]
         }
+      ];
+      if (action === 'approve') {
+        stmts.push({
+          sql: "UPDATE registrations SET status = 'paid' WHERE club_id = ? AND status = 'registered'",
+          args: [proof.club_id]
+        });
       }
+      await getDb().batch(stmts, 'write');
 
       res.json({ message: action === 'approve' ? '已確認繳費' : '已駁回' });
     } catch (err) {
@@ -637,15 +698,16 @@ function startServer() {
       const proof = await getOne("SELECT * FROM payment_proofs WHERE id = ?", [req.params.id]);
       if (!proof) return res.status(404).json({ error: '繳費證明不存在' });
 
-      await runQuery(
-        "UPDATE payment_proofs SET status = 'pending', reviewed_by = NULL, reviewed_at = NULL WHERE id = ?",
-        [req.params.id]
-      );
-
-      await runQuery(
-        "UPDATE registrations SET status = 'registered' WHERE club_id = ? AND status = 'paid' AND created_at <= ?",
-        [proof.club_id, proof.uploaded_at]
-      );
+      await getDb().batch([
+        {
+          sql: "UPDATE payment_proofs SET status = 'pending', reviewed_by = NULL, reviewed_at = NULL WHERE id = ?",
+          args: [req.params.id]
+        },
+        {
+          sql: "UPDATE registrations SET status = 'registered' WHERE club_id = ? AND status = 'paid' AND created_at <= ?",
+          args: [proof.club_id, proof.uploaded_at]
+        }
+      ], 'write');
 
       res.json({ message: '已重設為待審核' });
     } catch (err) {
@@ -691,7 +753,9 @@ function startServer() {
   app.put('/api/admin/clubs/:id', authMiddleware, requirePerm('clubs'), async (req, res) => {
     try {
       const { club_name } = req.body;
-      await runQuery("UPDATE clubs SET club_name = ? WHERE club_id = ? AND is_admin = 0", [club_name, parseInt(req.params.id)]);
+      if (!club_name || !String(club_name).trim()) return res.status(400).json({ error: '請輸入社名' });
+      if (String(club_name).length > 100) return res.status(400).json({ error: '社名過長' });
+      await runQuery("UPDATE clubs SET club_name = ? WHERE club_id = ? AND is_admin = 0", [String(club_name).trim(), parseInt(req.params.id)]);
       res.json({ message: '更新成功' });
     } catch (err) {
       console.error('Club update error:', err.message);
@@ -795,10 +859,10 @@ function startServer() {
   });
 
   app.post('/api/admin/import-excel', authMiddleware, requirePerm('clubs'), (req, res, next) => {
-    upload.single('file')(req, res, (err) => {
+    uploadXlsx.single('file')(req, res, (err) => {
       if (err) {
         if (err.code === 'LIMIT_FILE_SIZE') return res.status(400).json({ error: '檔案過大：單檔不可超過 10MB' });
-        console.error('Import multer error:', err);
+        console.error('Import xlsx multer error:', err.message);
         return res.status(400).json({ error: String(err.message).includes('不支援') ? err.message : '上傳失敗：' + err.message });
       }
       next();
@@ -807,7 +871,7 @@ function startServer() {
     if (!req.file) return res.status(400).json({ error: '請選擇檔案' });
 
     try {
-      const workbook = XLSX.readFile(req.file.path);
+      const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
       let sheetName = workbook.SheetNames.find(n => n.includes('社號社名'));
       if (!sheetName) {
         for (const name of workbook.SheetNames) {
@@ -831,7 +895,6 @@ function startServer() {
         }));
 
       await importClubs(clubs);
-      fs.unlinkSync(req.file.path);
       res.json({ message: `成功匯入 ${clubs.length} 個社團` });
     } catch (err) {
       console.error('Import excel error:', err.message);
@@ -930,6 +993,24 @@ function startServer() {
       return res.status(400).json({ error: '備份檔案格式不正確' });
     }
 
+    // 先完整驗證再動資料（避免刪除後才發現備份壞掉造成資料遺失）
+    const backupSettings = Array.isArray(backup.settings) ? backup.settings : [];
+    const backupProofs = Array.isArray(backup.payment_proofs) ? backup.payment_proofs : [];
+    if (backupSettings.some(s => s && s.key === 'jwt_secret')) {
+      return res.status(400).json({ error: '備份含有受保護的內部設定，已拒絕還原' });
+    }
+    // file_path 允許前導斜線（舊版備份格式為 /uploads/...），去頭後必須落在 uploads/ 內
+    if (backupProofs.some(p => !p || typeof p.file_path !== 'string'
+      || String(p.file_path).replace(/^[\\/]+/, '').includes('..')
+      || /^[a-zA-Z]:[\\/]/.test(p.file_path)
+      || !String(p.file_path).replace(/^[\\/]+/, '').startsWith('uploads/'))) {
+      return res.status(400).json({ error: '備份含有無效的檔案路徑，已拒絕還原' });
+    }
+    // 社號需為正整數（is_admin=1 的管理員列一律跳過不驗證，反正不會還原）
+    if (backup.clubs.some(c => !c || (Number(c.is_admin) !== 1 && (!/^\d+$/.test(String(c.club_id ?? '')) || Number(c.club_id) <= 0 || c.club_name == null)))) {
+      return res.status(400).json({ error: '備份含有無效的社團資料（社號需為正整數），已拒絕還原' });
+    }
+
     try {
       const dbConn = getDb();
 
@@ -961,10 +1042,13 @@ function startServer() {
       }));
       if (regStmts.length > 0) await dbConn.batch(regStmts, 'write');
 
-      // Restore payment proofs（file_path 需為 uploads/ 下的相對路徑，防路徑穿透）
-      if (backup.payment_proofs && backup.payment_proofs.length > 0) {
-        const ppStmts = backup.payment_proofs
-          .filter(p => p && typeof p.file_path === 'string' && !p.file_path.includes('..') && !p.file_path.startsWith('/') && !/^[a-zA-Z]:[\\/]/.test(p.file_path) && p.file_path.startsWith('uploads/'))
+      // Restore payment proofs（file_path 去前導斜線後需落在 uploads/ 下，防路徑穿透）
+      if (backupProofs.length > 0) {
+        const ppStmts = backupProofs
+          .filter(p => p && typeof p.file_path === 'string'
+            && !String(p.file_path).replace(/^[\\/]+/, '').includes('..')
+            && !/^[a-zA-Z]:[\\/]/.test(p.file_path)
+            && String(p.file_path).replace(/^[\\/]+/, '').startsWith('uploads/'))
           .map(p => ({
           sql: "INSERT OR REPLACE INTO payment_proofs (id, registration_id, club_id, file_path, file_type, file_name, status, reviewed_by, reviewed_at, uploaded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
           args: [p.id, p.registration_id, p.club_id, p.file_path, p.file_type, p.file_name || '', p.status || 'pending', p.reviewed_by || null, p.reviewed_at || null, p.uploaded_at || null]
@@ -1118,6 +1202,25 @@ function startServer() {
   });
 
   // ===== LINE Bot Webhook =====
+  // 事件處理併發上限（群組訊息轟炸時避免同時打爆 Gemini 與 DB）
+  const LINE_EVENT_CONCURRENCY = 5;
+  let lineEventActive = 0;
+  const lineEventQueue = [];
+  function processLineEvent(event) {
+    const run = () => {
+      lineEventActive++;
+      handleLineEvent(event)
+        .catch(err => console.error('LINE event error:', err.message))
+        .finally(() => {
+          lineEventActive--;
+          const next = lineEventQueue.shift();
+          if (next) next();
+        });
+    };
+    if (lineEventActive < LINE_EVENT_CONCURRENCY) run();
+    else lineEventQueue.push(run);
+  }
+
   app.post('/line/webhook', webhookLimiter, async (req, res) => {
     const events = (req.body && req.body.events) || [];
     const signature = req.headers['x-line-signature'];
@@ -1129,7 +1232,7 @@ function startServer() {
     res.status(200).json({ status: 'ok' });
     if (events.length > 0) recordWebhookDiag('events', events);
     for (const event of events) {
-      handleLineEvent(event).catch(err => console.error('LINE event error:', err.message));
+      processLineEvent(event);
     }
   });
 
@@ -1228,7 +1331,7 @@ function startServer() {
 
   // 上傳文書檔案（Word/Excel/PDF/TXT）→ 抽取文字 → 分段寫入 knowledge 表
   // multer 錯誤（超過 20MB / 超過 5 檔）獨立處理，避免落入全域錯誤 handler 回「伺服器錯誤」
-  app.post('/api/admin/knowledge/upload', authMiddleware, requirePerm('settings'), (req, res, next) => {
+  app.post('/api/admin/knowledge/upload', authMiddleware, requirePerm('settings'), uploadLimiter, (req, res, next) => {
     uploadKnowledgeMemory.array('files', 5)(req, res, (err) => {
       if (err) {
         if (err.code === 'LIMIT_FILE_SIZE') return res.status(400).json({ error: '檔案過大：單檔不可超過 20MB' });
@@ -1359,7 +1462,7 @@ function startServer() {
   const ANNOUNCE_IMAGE_MAX = 5;
   const ANNOUNCE_IMAGE_MAX_BYTES = 2 * 1024 * 1024;
   const ANNOUNCE_IMAGE_TOTAL_BYTES = 6 * 1024 * 1024; // base64 後約 8MB，需低於 express.json 10mb 限制
-  app.post('/api/admin/announce/generate', authMiddleware, requirePerm('announce'), async (req, res) => {
+  app.post('/api/admin/announce/generate', authMiddleware, requirePerm('announce'), uploadLimiter, async (req, res) => {
     try {
       const raw = req.body && req.body.raw ? String(req.body.raw).trim() : '';
       const instructions = req.body && req.body.instructions ? String(req.body.instructions).trim() : '';

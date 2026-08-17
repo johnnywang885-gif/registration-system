@@ -6,7 +6,11 @@ const CHANNEL_SECRET = process.env.LINE_CHANNEL_SECRET;
 const CHANNEL_ACCESS_TOKEN = process.env.LINE_CHANNEL_ACCESS_TOKEN;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_GROUNDING = ['on', '1', 'true'].includes(String(process.env.GEMINI_GROUNDING || '').toLowerCase());
-const GROUNDING_MAX_MONTH = parseInt(process.env.GEMINI_GROUNDING_MAX_MONTH || '4800', 10);
+// NaN 守衛：環境變數非數字時退回預設 4800
+const GROUNDING_MAX_MONTH = (() => {
+  const v = parseInt(process.env.GEMINI_GROUNDING_MAX_MONTH, 10);
+  return Number.isFinite(v) && v > 0 ? v : 4800;
+})();
 const LINE_API = 'https://api.line.me/v2/bot';
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
 const GEMINI_API = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
@@ -51,17 +55,29 @@ function verifySignature(rawBody, signature) {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
+// LINE API 呼叫（含 429 重試一次：尊重 Retry-After）
+async function lineRequest(path, payload) {
+  const doCall = () => fetchWithTimeout(`${LINE_API}${path}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${CHANNEL_ACCESS_TOKEN}`
+    },
+    body: JSON.stringify(payload)
+  }, 15000);
+  let res = await doCall();
+  if (res.status === 429) {
+    const retryAfter = parseInt(res.headers.get('retry-after') || '1', 10);
+    await new Promise(r => setTimeout(r, Math.min(isNaN(retryAfter) ? 1000 : retryAfter * 1000, 10000)));
+    res = await doCall();
+  }
+  return res;
+}
+
 async function replyMessage(replyToken, text) {
   if (!CHANNEL_ACCESS_TOKEN || !replyToken) return false;
   try {
-    const res = await fetchWithTimeout(`${LINE_API}/message/reply`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${CHANNEL_ACCESS_TOKEN}`
-      },
-      body: JSON.stringify({ replyToken, messages: [{ type: 'text', text }] })
-    }, 15000);
+    const res = await lineRequest('/message/reply', { replyToken, messages: [{ type: 'text', text }] });
     if (!res.ok) console.error('LINE reply error:', res.status, await res.text().catch(() => ''));
     return res.ok;
   } catch (err) {
@@ -86,14 +102,7 @@ async function pushToUser(userId, text) {
 async function pushToLineUser(to, text) {
   if (!CHANNEL_ACCESS_TOKEN || !to) return false;
   try {
-    const res = await fetchWithTimeout(`${LINE_API}/message/push`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${CHANNEL_ACCESS_TOKEN}`
-      },
-      body: JSON.stringify({ to, messages: [{ type: 'text', text }] })
-    }, 15000);
+    const res = await lineRequest('/message/push', { to, messages: [{ type: 'text', text }] });
     if (!res.ok) console.error('LINE push error:', res.status, await res.text().catch(() => ''));
     return res.ok;
   } catch (err) {
@@ -265,9 +274,9 @@ async function geminiRequest(system, userText, options = {}) {
     for (let attempt = 0; attempt < retries; attempt++) {
       let res;
       try {
-        res = await withGeminiSlot(() => fetchWithTimeout(`${GEMINI_API}?key=${GEMINI_API_KEY}`, {
+        res = await withGeminiSlot(() => fetchWithTimeout(`${GEMINI_API}`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': GEMINI_API_KEY },
           body: JSON.stringify(p)
         }, 60000));
       } catch (err) {
@@ -421,13 +430,20 @@ function parseClubAnnouncements(text, rawData, allowImageIds) {
   }
   if (!Array.isArray(arr)) return null;
   const knownIds = new Set(String(rawData).match(/\b\d{4}\b/g) || []);
-  const items = arr
-    .filter(x => x && x.club_id && (knownIds.has(String(x.club_id)) || (allowImageIds && /^\d{4}$/.test(String(x.club_id)))) && x.message)
-    .map(x => ({
-      club_id: String(x.club_id),
+  const items = [];
+  const seenIds = new Set();
+  for (const x of arr) {
+    if (!x || !x.club_id || !x.message) continue;
+    const cid = String(x.club_id);
+    if (!(knownIds.has(cid) || (allowImageIds && /^\d{4}$/.test(cid)))) continue;
+    if (seenIds.has(cid)) continue; // 同社去重，保留第一筆
+    seenIds.add(cid);
+    items.push({
+      club_id: cid,
       club_name: String(x.club_name || ''),
       message: String(x.message).trim()
-    }));
+    });
+  }
   return items.length ? items : null;
 }
 
@@ -487,7 +503,12 @@ async function generateAnnouncement(rawData, instructions, mode, images) {
   ].join('\n');
   try {
     const text = await callGemini(system, prompt, { maxOutputTokens: 4000, images });
-    if (!text) console.error('generateAnnouncement[group] Gemini returned null — images:', images.length, 'rawData length:', String(rawData).length);
+    if (!text) {
+      console.error('generateAnnouncement[group] Gemini returned null — images:', images.length, 'rawData length:', String(rawData).length);
+      // 空結果補一次重試（隔 10 秒），避免單次 429/中斷直接回 null
+      await new Promise(r => setTimeout(r, 10000));
+      return await callGemini(system, prompt, { maxOutputTokens: 4000, images });
+    }
     return text;
   } catch (err) {
     console.error('generateAnnouncement[group] exception:', err.message);

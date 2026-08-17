@@ -42,20 +42,19 @@ async function promoteStandby(db, quota, options = {}) {
     ? " AND r.club_id IN (SELECT club_id FROM payment_proofs WHERE status = 'approved')"
     : "";
 
+  // 單一語句原子完成「讀取候補清單＋更新」（讀取與寫入之間無空隙，
+  // 併發執行也不會超過 quota：條件式子查詢只會撈到當下仍是 standby 的列）
   const result = await db.execute({
-    sql: `SELECT r.id FROM registrations r WHERE r.phase = 1 AND r.status = 'standby'${clubFilter} ORDER BY r.created_at ASC, r.id ASC`
+    sql: `UPDATE registrations SET status = 'registered'
+          WHERE id IN (
+            SELECT r.id FROM registrations r
+            WHERE r.phase = 1 AND r.status = 'standby'${clubFilter}
+            ORDER BY r.created_at ASC, r.id ASC
+            LIMIT ?
+          ) AND status = 'standby'`,
+    args: [available]
   });
-  const standbyList = result.rows || [];
-  const toPromote = standbyList.slice(0, available);
-
-  if (toPromote.length === 0) return { promoted: 0 };
-
-  const stmts = toPromote.map(r => ({
-    sql: "UPDATE registrations SET status = 'registered' WHERE id = ? AND status = 'standby'",
-    args: [Number(r.id)]
-  }));
-  await db.batch(stmts, 'write');
-  return { promoted: toPromote.length };
+  return { promoted: Number(result.rowsAffected) || 0 };
 }
 
 async function forfeitUnpaidByPhase(db, phase) {

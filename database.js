@@ -163,7 +163,8 @@ async function ensureAdminPermsColumn() {
     await db.execute("ALTER TABLE clubs ADD COLUMN admin_perms TEXT");
     console.log('Migration: clubs.admin_perms 欄位已新增');
   } catch (err) {
-    // column already exists — ignore
+    // 僅「欄位已存在」屬正常（SQLite duplicate column name）；其他錯誤要重拋，不能吞掉
+    if (!/duplicate column/i.test(String(err && err.message))) throw err;
   }
 }
 
@@ -174,7 +175,7 @@ async function ensureKnowledgeSourceFileColumn() {
     await db.execute("ALTER TABLE knowledge ADD COLUMN source_file TEXT");
     console.log('Migration: knowledge.source_file 欄位已新增');
   } catch (err) {
-    // column already exists — ignore
+    if (!/duplicate column/i.test(String(err && err.message))) throw err;
   }
 }
 
@@ -183,14 +184,16 @@ async function importClubs(clubsData) {
   const valid = clubsData.filter(c => c && c.club_id != null && c.club_name != null && String(c.club_name).trim() !== ''
     && /^\d+$/.test(String(c.club_id)) && Number(c.club_id) > 0);
   if (valid.length === 0) return 0;
-  const stmts = valid.map(club => {
+  // bcrypt.hash 非同步（避免 hashSync 迴圈阻塞 event loop 15-45 秒）
+  const stmts = [];
+  for (const club of valid) {
     const defaultPwd = String(club.club_id).slice(-4);
-    const hash = bcrypt.hashSync(defaultPwd, 10);
-    return {
+    const hash = await bcrypt.hash(defaultPwd, 10);
+    stmts.push({
       sql: "INSERT INTO clubs (club_id, club_name, password, is_admin) VALUES (?, ?, ?, 0) ON CONFLICT(club_id) DO UPDATE SET club_name = excluded.club_name, password = excluded.password WHERE is_admin = 0 AND (admin_perms IS NULL OR admin_perms = '')",
       args: [club.club_id, String(club.club_name).trim(), hash]
-    };
-  });
+    });
+  }
   await db.batch(stmts, 'write');
   return valid.length;
 }

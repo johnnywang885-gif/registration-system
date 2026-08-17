@@ -115,6 +115,52 @@ async function main() {
   if (r.status !== 400 || !String(big.error).includes('10MB')) throw new Error('payment oversize should 400 with 10MB msg, got ' + r.status + ' ' + big.error);
   console.log('[M2] 繳費上傳 >10MB → 明確 400 OK');
 
+  // 4c: 上傳內容型別驗證（魔數 sniff）——內容不是真的 PDF/圖片 → 400
+  const fdFake = new FormData();
+  fdFake.append('file', new Blob([Buffer.from('this is not a pdf at all')], { type: 'application/pdf' }), 'fake.pdf');
+  r = await fetch(`${BASE}/api/payment/upload`, {
+    method: 'POST', headers: { 'Authorization': `Bearer ${token}` }, body: fdFake
+  });
+  if (r.status !== 400 || !String((await r.json()).error).includes('格式')) throw new Error('fake-content upload should 400, got ' + r.status);
+  console.log('[M2b] 繳費上傳魔數不符 → 明確 400 OK');
+
+  // 4b: 註冊欄位長度上限——超長 name → 400
+  const clubLogin = await fetch(`${BASE}/api/login`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ clubId: '9999', password: '9999' })
+  });
+  const clubToken = (await clubLogin.json()).token;
+  if (!clubToken) throw new Error('club 9999 login failed');
+  const clubAuth = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${clubToken}` };
+  r = await fetch(`${BASE}/api/registrations`, {
+    method: 'POST', headers: clubAuth,
+    body: JSON.stringify({ name: 'X'.repeat(500) })
+  });
+  if (r.status !== 400) throw new Error('overlong registration name should 400, got ' + r.status);
+  console.log('[M2c] 註冊欄位超長 → 400 OK');
+
+  // 4a: import-excel 使用獨立 multer——真正的 xlsx 檔應可匯入（而非被圖片 filter 擋掉）
+  const XLSX = require('xlsx');
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet([
+    { 社號: 2401, 社名: '眉溪' }, { 社號: 2402, 社名: '羅娜' }
+  ]), '社團');
+  const xlsxBuf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  const fdXlsx = new FormData();
+  fdXlsx.append('file', new Blob([xlsxBuf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), 'clubs.xlsx');
+  r = await fetch(`${BASE}/api/admin/import-excel`, {
+    method: 'POST', headers: { 'Authorization': `Bearer ${token}` }, body: fdXlsx
+  });
+  const xlsxRes = await r.json();
+  if (r.status !== 200 || !String(xlsxRes.message).includes('成功匯入 2')) throw new Error('xlsx import should succeed, got ' + r.status + ' ' + JSON.stringify(xlsxRes));
+  const fdTxt = new FormData();
+  fdTxt.append('file', new Blob([Buffer.from('2401 眉溪')], { type: 'text/plain' }), 'clubs.txt');
+  r = await fetch(`${BASE}/api/admin/import-excel`, {
+    method: 'POST', headers: { 'Authorization': `Bearer ${token}` }, body: fdTxt
+  });
+  if (r.status !== 400) throw new Error('txt import-excel should 400, got ' + r.status);
+  console.log('[M2d] import-excel：xlsx 可匯入、非 xlsx 明確 400 OK');
+
   // 全域審查批1：S1 公開 API 不得洩漏 jwt_secret / grounding / webhook 計數器
   await runQuery("INSERT OR REPLACE INTO settings (key, value) VALUES ('jwt_secret', 'TOP-SECRET'), ('grounding_2026-08', '100'), ('webhook_pings', '5')");
   const pub = await (await fetch(`${BASE}/api/summary`)).json();
@@ -151,7 +197,7 @@ async function main() {
   if (r.status !== 400) throw new Error('POST clubs with club_id=0 should 400, got ' + r.status);
   console.log('[S3] importClubs/POST clubs 無法覆寫管理帳號 OK');
 
-  // S1d: restore 不得還原 jwt_secret / is_admin=1 帳號 / 惡意 file_path
+  // S1d: restore 預先驗證——含 jwt_secret / 惡意 file_path 的備份 → 400 拒絕、完全不動 DB
   const evilBackup = {
     clubs: [{ club_id: 0, club_name: 'EVIL-ADMIN', password: 'x', is_admin: 1 },
             { club_id: 5001, club_name: '正常社', password: 'x', is_admin: 0 }],
@@ -162,7 +208,7 @@ async function main() {
   r = await fetch(`${BASE}/api/admin/restore`, {
     method: 'POST', headers: auth, body: JSON.stringify(evilBackup)
   });
-  if (r.status !== 200) throw new Error('restore should 200, got ' + r.status);
+  if (r.status !== 400) throw new Error('malicious restore should 400 (reject before delete), got ' + r.status);
   const afterRestore = await getOne("SELECT club_id, club_name, is_admin FROM clubs WHERE club_id = 0");
   if (afterRestore.club_name === 'EVIL-ADMIN') throw new Error('restore must not replace system admin');
   const restoredSecret = await getOne("SELECT value FROM settings WHERE key = 'jwt_secret'");
@@ -174,20 +220,38 @@ async function main() {
     body: JSON.stringify({ clubId: 'admin', password: 'admin123' })
   });
   if (!r.ok) throw new Error('admin must still log in after restore');
-  console.log('[S1d] restore 過濾 jwt_secret / 管理帳號 / 惡意路徑 OK');
+  console.log('[S1d] restore 預先驗證（400 拒絕、jwt_secret/管理帳號/惡意路徑不還原） OK');
+
+  // S1e: 舊版備份的 file_path 帶前導斜線（/uploads/...）仍應正常還原（剝除後驗證）
+  const slashBackup = {
+    clubs: [{ club_id: 5001, club_name: '正常社', password: 'x', is_admin: 0 }],
+    registrations: [{ id: 1, club_id: 5001, position: '社長', name: '測試', phase: 1, status: 'registered' }],
+    payment_proofs: [{ id: 998, registration_id: 1, club_id: 5001, file_path: '/uploads/payments/payment_5001_x.pdf', file_type: 'pdf', file_name: 'x.pdf', status: 'pending' }],
+    settings: [{ key: 'bot_name', value: '測試' }]
+  };
+  r = await fetch(`${BASE}/api/admin/restore`, {
+    method: 'POST', headers: auth, body: JSON.stringify(slashBackup)
+  });
+  if (r.status !== 200) throw new Error('legacy leading-slash backup should 200, got ' + r.status);
+  const legacyProof = await getOne("SELECT id, file_path FROM payment_proofs WHERE id = 998");
+  if (!legacyProof) throw new Error('legacy backup payment_proofs must be restored');
+  if (legacyProof.file_path !== '/uploads/payments/payment_5001_x.pdf') throw new Error('legacy file_path must be kept verbatim');
+  console.log('[S1e] 舊版前導斜線 file_path 備份正常還原 OK');
 
   // S4+S6: 付款檔案路徑 containment + 權限（admin 需 payments 權限才能讀他人檔案）
   await runQuery("INSERT INTO registrations (club_id, position, name, phase, status) VALUES (5001, '社長', '測試', 1, 'registered')");
   await runQuery("INSERT INTO payment_proofs (registration_id, club_id, file_path, file_type, file_name, status) VALUES ((SELECT id FROM registrations WHERE club_id = 5001), 5001, '../../server.js', 'image/png', 't.png', 'pending'), ((SELECT id FROM registrations WHERE club_id = 5001), 5001, 'uploads/payments/nope.png', 'image/png', 'n.png', 'pending')");
-  r = await fetch(`${BASE}/api/payment/file/1`, { headers: { 'Authorization': `Bearer ${token}` } });
+  const proofIds = await getOne("SELECT id FROM payment_proofs WHERE club_id = 5001 AND file_path = '../../server.js'");
+  const proofIds2 = await getOne("SELECT id FROM payment_proofs WHERE club_id = 5001 AND file_path = 'uploads/payments/nope.png'");
+  r = await fetch(`${BASE}/api/payment/file/${proofIds.id}`, { headers: { 'Authorization': `Bearer ${token}` } });
   if (r.status !== 403) throw new Error('traversal file_path should 403, got ' + r.status);
-  r = await fetch(`${BASE}/api/payment/file/2`, { headers: { 'Authorization': `Bearer ${token}` } });
+  r = await fetch(`${BASE}/api/payment/file/${proofIds2.id}`, { headers: { 'Authorization': `Bearer ${token}` } });
   if (r.status !== 404) throw new Error('valid path should reach existence check (404), got ' + r.status);
   const noPayToken = generateToken({ club_id: 6001, club_name: '次管理', is_admin: 0, admin_perms: '["registrations"]' });
-  r = await fetch(`${BASE}/api/payment/file/2`, { headers: { 'Authorization': `Bearer ${noPayToken}` } });
+  r = await fetch(`${BASE}/api/payment/file/${proofIds2.id}`, { headers: { 'Authorization': `Bearer ${noPayToken}` } });
   if (r.status !== 403) throw new Error('sub-admin without payments perm should 403, got ' + r.status);
   const payToken = generateToken({ club_id: 6002, club_name: '次管理2', is_admin: 0, admin_perms: '["payments"]' });
-  r = await fetch(`${BASE}/api/payment/file/2`, { headers: { 'Authorization': `Bearer ${payToken}` } });
+  r = await fetch(`${BASE}/api/payment/file/${proofIds2.id}`, { headers: { 'Authorization': `Bearer ${payToken}` } });
   if (r.status !== 404) throw new Error('sub-admin with payments perm should pass gate (404), got ' + r.status);
   console.log('[S4/S6] 付款檔案路徑 containment＋payments 權限 OK');
 

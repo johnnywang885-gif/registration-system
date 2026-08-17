@@ -59,7 +59,8 @@ async function extractEntriesFromFile(filename, buffer) {
       const lines = rows
         .map(row => (Array.isArray(row) ? row.map(c => String(c == null ? '' : c).trim()).filter(Boolean).join('，') : '').trim())
         .filter(Boolean);
-      const content = normalizeText(lines.join('\n'));
+      let content = normalizeText(lines.join('\n'));
+      if (content.length > MAX_TOTAL_CHARS) content = content.slice(0, MAX_TOTAL_CHARS); // 大 Excel 防爆記憶體
       if (content) entries.push({ title: `${baseTitle}（${name}）`, content });
     }
     if (!entries.length) throw new Error('無法從 Excel 判讀出文字（可能為空白工作表）');
