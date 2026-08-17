@@ -389,18 +389,19 @@ async function generateAnnouncement(rawData, instructions, mode, images) {
   }
 
   const prompt = [
-    '將以下原始資料整理成 LINE 群組公告：',
-    '1. 標題「📢 【重要通知】」＋事由；',
-    '2. 條列每社「社號 社名（事項/日期）」，特別備註標示於該社後；',
-    '3. 結尾 1-2 行溫馨提醒；',
-    '4. 純文字繁體中文、條列清晰，列全所有社團不得遺漏。',
+    '從以下資料（文字或圖片）提取所有社團，整理為LINE公告：',
+    '1. 先列出「📢 【重要通知】」標題+事由；',
+    '2. 條列每社「社號 社名」含事項或日期，備註併入該社行內；',
+    '3. 結尾1-2行提醒語。',
     '',
-    '原始資料：',
+    '⚠️ 重要：務必列「所有」社團，不可省略任何一社。',
+    '',
+    '資料：',
     String(rawData || ''),
     imgNote,
     note
   ].join('\n');
-  return callGemini(system, prompt, { maxOutputTokens: 3000, images });
+  return callGemini(system, prompt, { maxOutputTokens: 8000, images });
 }
 
 // ===== 來源名稱補抓（管理後台按鈕觸發，避免每則訊息呼叫 LINE API） =====
