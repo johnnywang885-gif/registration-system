@@ -229,7 +229,12 @@ async function geminiRequest(system, userText, options = {}) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(p)
       });
-      if (!res.ok) return { ok: false, status: res.status, usedGrounding: false, sources: [] };
+      if (!res.ok) {
+        let errBody = '';
+        try { errBody = await res.text(); } catch (_) {}
+        console.error('Gemini API error:', res.status, errBody.slice(0, 500));
+        return { ok: false, status: res.status, usedGrounding: false, sources: [] };
+      }
       const data = await res.json();
       const cand = data.candidates && data.candidates[0];
       const text = cand && cand.content && cand.content.parts
@@ -380,10 +385,15 @@ async function generateAnnouncement(rawData, instructions, mode, images) {
       note
     ].join('\n');
     for (let attempt = 0; attempt < 2; attempt++) {
-      const text = await callGemini(system, prompt + (attempt > 0 ? '\n\n再次提醒：只輸出 JSON 陣列，不要加入任何其他說明文字。' : ''), { maxOutputTokens: 3000, images });
-      if (!text) return null;
-      const items = parseClubAnnouncements(text, rawData, !!(images && images.length));
-      if (items) return items;
+      try {
+        const text = await callGemini(system, prompt + (attempt > 0 ? '\n\n再次提醒：只輸出 JSON 陣列，不要加入任何其他說明文字。' : ''), { maxOutputTokens: 3000, images });
+        if (!text) { console.error('generateAnnouncement[clubs] Gemini returned null, attempt:', attempt); return null; }
+        const items = parseClubAnnouncements(text, rawData, !!(images && images.length));
+        if (items) return items;
+      } catch (err) {
+        console.error('generateAnnouncement[clubs] exception:', err.message);
+        return null;
+      }
     }
     return null;
   }
@@ -401,7 +411,14 @@ async function generateAnnouncement(rawData, instructions, mode, images) {
     imgNote,
     note
   ].join('\n');
-  return callGemini(system, prompt, { maxOutputTokens: 8000, images });
+  try {
+    const text = await callGemini(system, prompt, { maxOutputTokens: 4000, images });
+    if (!text) console.error('generateAnnouncement[group] Gemini returned null — images:', images.length, 'rawData length:', String(rawData).length);
+    return text;
+  } catch (err) {
+    console.error('generateAnnouncement[group] exception:', err.message);
+    return null;
+  }
 }
 
 // ===== 來源名稱補抓（管理後台按鈕觸發，避免每則訊息呼叫 LINE API） =====

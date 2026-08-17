@@ -1366,6 +1366,7 @@ function startServer() {
         generateAnnouncement(raw, instructions, 'group', images),
         generateAnnouncement(raw, instructions, 'clubs', images)
       ]);
+      console.log('Announce result: broadcast=' + (broadcast ? broadcast.length + 'chars' : 'null') + ' perClub=' + (perClub ? perClub.length + 'items' : 'null') + ' images=' + images.length);
       if (!broadcast && !perClub) return res.status(500).json({ error: 'AI 公告產生失敗，請稍後再試（或確認 Gemini 已設定）' });
       res.json({ broadcast, perClub: perClub || [] });
     } catch (err) {
