@@ -12,7 +12,36 @@ const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
 const GEMINI_API = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 const SYSTEM_URL = process.env.SYSTEM_URL || 'https://registration-system-production-4e05.up.railway.app';
 
-const FEEDBACK_KEYWORDS = ['意見', '建議', '回報', '改進', '壞掉', '希望', 'bug', '臭蟲'];
+const FEEDBACK_KEYWORDS = ['意見', '建議', '回報', '改進', '壞掉', 'bug', '臭蟲'];
+
+// 統一 fetch：逾時自動中止，避免無 timeout 的呼叫卡死
+async function fetchWithTimeout(url, options = {}, timeoutMs = 15000) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: ctrl.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Gemini 呼叫併發上限（群組訊息轟炸時避免放大 429）
+const GEMINI_MAX_CONCURRENT = 2;
+let geminiActive = 0;
+const geminiWaiters = [];
+async function withGeminiSlot(fn) {
+  if (geminiActive >= GEMINI_MAX_CONCURRENT) {
+    await new Promise(r => geminiWaiters.push(r));
+  }
+  geminiActive++;
+  try {
+    return await fn();
+  } finally {
+    geminiActive--;
+    const next = geminiWaiters.shift();
+    if (next) next();
+  }
+}
 
 function verifySignature(rawBody, signature) {
   if (!CHANNEL_SECRET || !signature || !rawBody) return false;
@@ -24,16 +53,21 @@ function verifySignature(rawBody, signature) {
 
 async function replyMessage(replyToken, text) {
   if (!CHANNEL_ACCESS_TOKEN || !replyToken) return false;
-  const res = await fetch(`${LINE_API}/message/reply`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${CHANNEL_ACCESS_TOKEN}`
-    },
-    body: JSON.stringify({ replyToken, messages: [{ type: 'text', text }] })
-  });
-  if (!res.ok) console.error('LINE reply error:', res.status, await res.text().catch(() => ''));
-  return res.ok;
+  try {
+    const res = await fetchWithTimeout(`${LINE_API}/message/reply`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${CHANNEL_ACCESS_TOKEN}`
+      },
+      body: JSON.stringify({ replyToken, messages: [{ type: 'text', text }] })
+    }, 15000);
+    if (!res.ok) console.error('LINE reply error:', res.status, await res.text().catch(() => ''));
+    return res.ok;
+  } catch (err) {
+    console.error('LINE reply error:', err.message);
+    return false;
+  }
 }
 
 async function pushToGroup(text) {
@@ -51,16 +85,21 @@ async function pushToUser(userId, text) {
 
 async function pushToLineUser(to, text) {
   if (!CHANNEL_ACCESS_TOKEN || !to) return false;
-  const res = await fetch(`${LINE_API}/message/push`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${CHANNEL_ACCESS_TOKEN}`
-    },
-    body: JSON.stringify({ to, messages: [{ type: 'text', text }] })
-  });
-  if (!res.ok) console.error('LINE push error:', res.status, await res.text().catch(() => ''));
-  return res.ok;
+  try {
+    const res = await fetchWithTimeout(`${LINE_API}/message/push`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${CHANNEL_ACCESS_TOKEN}`
+      },
+      body: JSON.stringify({ to, messages: [{ type: 'text', text }] })
+    }, 15000);
+    if (!res.ok) console.error('LINE push error:', res.status, await res.text().catch(() => ''));
+    return res.ok;
+  } catch (err) {
+    console.error('LINE push error:', err.message);
+    return false;
+  }
 }
 
 // ===== 對話紀錄收集 =====
@@ -224,59 +263,70 @@ async function geminiRequest(system, userText, options = {}) {
 
   const doRequest = async (p, retries = 3) => {
     for (let attempt = 0; attempt < retries; attempt++) {
+      let res;
       try {
-        const res = await fetch(`${GEMINI_API}?key=${GEMINI_API_KEY}`, {
+        res = await withGeminiSlot(() => fetchWithTimeout(`${GEMINI_API}?key=${GEMINI_API_KEY}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(p)
-        });
-        if (res.status === 429) {
-          let errBody = '';
-          try { errBody = await res.text(); } catch (_) {}
-          const retryMatch = errBody.match(/retry in ([\d.]+)s/i);
-          const waitSec = retryMatch ? parseFloat(retryMatch[1]) : (attempt + 1) * 10;
-          if (attempt < retries - 1) {
-            console.error('Gemini 429 rate limit, retry in', waitSec, 's (attempt', attempt + 1, '/', retries, ')');
-            await new Promise(r => setTimeout(r, waitSec * 1000));
-            continue;
-          }
-          console.error('Gemini 429 exhausted after', retries, 'retries');
-          return { ok: false, status: 429, usedGrounding: false, sources: [] };
-        }
-        if (!res.ok) {
-          let errBody = '';
-          try { errBody = await res.text(); } catch (_) {}
-          console.error('Gemini API error:', res.status, errBody.slice(0, 500));
-          return { ok: false, status: res.status, usedGrounding: false, sources: [] };
-        }
-        const data = await res.json();
-        const cand = data.candidates && data.candidates[0];
-        const text = cand && cand.content && cand.content.parts
-          ? cand.content.parts.map(part => part.text || '').join('')
-          : null;
-        let usedGrounding = false;
-        let sources = [];
-        if (cand && cand.groundingMetadata) {
-          usedGrounding = true;
-          if (Array.isArray(cand.groundingMetadata.groundingChunks)) {
-            sources = cand.groundingMetadata.groundingChunks
-              .filter(c => c && c.web && c.web.uri)
-              .map(c => ({ uri: c.web.uri, title: c.web.title || '' }));
-          }
-        }
-        return { ok: true, text: text ? text.trim() : null, usedGrounding, sources };
+        }, 60000));
       } catch (err) {
+        // 網路錯誤／逾時：短退避重試
+        if (attempt < retries - 1) {
+          const waitSec = Math.min(5, 2 ** attempt);
+          console.error('Gemini network error, retry in', waitSec, 's (attempt', attempt + 1, '/', retries, ')', err.message);
+          await new Promise(r => setTimeout(r, waitSec * 1000));
+          continue;
+        }
         console.error('Gemini request error:', err.message);
         return { ok: false, status: -1, usedGrounding: false, sources: [] };
       }
+      if (res.status === 429 || res.status >= 500) {
+        let errBody = '';
+        try { errBody = await res.text(); } catch (_) {}
+        const retryAfter = Number(res.headers.get('retry-after')) || 0;
+        const retryMatch = errBody.match(/retry (?:in|after) ([\d.]+)s/i);
+        let waitSec = retryAfter > 0 ? retryAfter : (retryMatch ? parseFloat(retryMatch[1]) : (attempt + 1) * 5);
+        waitSec = Math.min(waitSec, 20); // 退避上限：LINE reply token 約 1 分鐘時效，不能無止盡等
+        if (attempt < retries - 1) {
+          console.error('Gemini', res.status, 'rate limit, retry in', waitSec, 's (attempt', attempt + 1, '/', retries, ')');
+          await new Promise(r => setTimeout(r, waitSec * 1000));
+          continue;
+        }
+        console.error('Gemini', res.status, 'exhausted after', retries, 'retries');
+        return { ok: false, status: res.status, usedGrounding: false, sources: [] };
+      }
+      if (!res.ok) {
+        let errBody = '';
+        try { errBody = await res.text(); } catch (_) {}
+        console.error('Gemini API error:', res.status, errBody.slice(0, 500));
+        return { ok: false, status: res.status, usedGrounding: false, sources: [] };
+      }
+      const data = await res.json();
+      const cand = data.candidates && data.candidates[0];
+      const text = cand && cand.content && cand.content.parts
+        ? cand.content.parts.map(part => part.text || '').join('')
+        : null;
+      let usedGrounding = false;
+      let sources = [];
+      if (cand && cand.groundingMetadata) {
+        usedGrounding = true;
+        if (Array.isArray(cand.groundingMetadata.groundingChunks)) {
+          sources = cand.groundingMetadata.groundingChunks
+            .filter(c => c && c.web && c.web.uri)
+            .map(c => ({ uri: c.web.uri, title: c.web.title || '' }));
+        }
+      }
+      return { ok: true, text: text ? text.trim() : null, usedGrounding, sources };
     }
     return { ok: false, status: -1, usedGrounding: false, sources: [] };
   };
 
   if (groundingOn) {
-    const first = await doRequest(payload);
+    const first = await doRequest(payload, 2);
     if (first.ok) {
-      await recordGroundingUse();
+      // 只在「真的用了網路搜尋」時計費（groundingMetadata 出現才算），防止一般回答吃掉搜尋額度
+      if (first.usedGrounding) await recordGroundingUse();
       return first;
     }
     console.error('Gemini grounding error:', first.status, '; retrying without grounding');
@@ -313,27 +363,31 @@ async function busyReplyText() {
 }
 
 async function answerQuestion(userText) {
-  // 第 1 層：知識庫（只帶知識庫、不開搜尋；未命中回固定標記「無相關資料」）
-  const entries = await retrieveKnowledge(userText);
-  const stage1System = await buildKnowledgeBase(entries);
-  const stage1 = await geminiRequest(stage1System, userText, { maxOutputTokens: 800 });
-  if (stage1.text && !stage1Miss(stage1.text)) {
-    return { text: stage1.text, tier: 'kb' };
-  }
-
-  // 第 2 層：網路搜尋（知識庫未命中才觸發；結果附註「網路查詢」來源）
-  const stage2System = await buildWebSearchPrompt();
-  const stage2 = await geminiRequest(stage2System, userText, { grounding: true, maxOutputTokens: 800 });
-  if (stage2.text && !stage2Fail(stage2.text)) {
-    let text = stage2.text;
-    if (stage2.usedGrounding) {
-      const url = stage2.sources[0] && stage2.sources[0].uri;
-      text += url ? `\n（資料來源：網路查詢：${url}）` : '\n（資料來源：網路查詢）';
+  try {
+    // 第 1 層：知識庫（只帶知識庫、不開搜尋；未命中回固定標記「無相關資料」）
+    const entries = await retrieveKnowledge(userText);
+    const stage1System = await buildKnowledgeBase(entries);
+    const stage1 = await geminiRequest(stage1System, userText, { maxOutputTokens: 800 });
+    if (stage1.text && !stage1Miss(stage1.text)) {
+      return { text: stage1.text, tier: 'kb' };
     }
-    return { text, tier: 'web' };
+
+    // 第 2 層：網路搜尋（知識庫未命中才觸發；結果附註「網路查詢」來源）
+    const stage2System = await buildWebSearchPrompt();
+    const stage2 = await geminiRequest(stage2System, userText, { grounding: true, maxOutputTokens: 800 });
+    if (stage2.text && !stage2Fail(stage2.text)) {
+      let text = stage2.text;
+      if (stage2.usedGrounding) {
+        const url = stage2.sources[0] && stage2.sources[0].uri;
+        text += url ? `\n（資料來源：網路查詢：${url}）` : '\n（資料來源：網路查詢）';
+      }
+      return { text, tier: 'web' };
+    }
+  } catch (err) {
+    console.error('answerQuestion error:', err.message);
   }
 
-  // 第 3 層：忙線訊息（可帶 bot_name 分身署名）
+  // 第 3 層：忙線訊息（可帶 bot_name 分身署名）；任何異常也走這裡並開單，不讓事件死掉
   return { text: await busyReplyText(), tier: 'busy', unanswered: true };
 }
 
@@ -403,7 +457,11 @@ async function generateAnnouncement(rawData, instructions, mode, images) {
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const text = await callGemini(system, prompt + (attempt > 0 ? '\n\n再次提醒：只輸出 JSON 陣列，不要加入任何其他說明文字。' : ''), { maxOutputTokens: 3000, images });
-        if (!text) { console.error('generateAnnouncement[clubs] Gemini returned null, attempt:', attempt); if (attempt === 0) await new Promise(r => setTimeout(r, 10000)); return null; }
+        if (!text) {
+          console.error('generateAnnouncement[clubs] Gemini returned null, attempt:', attempt);
+          if (attempt === 0) await new Promise(r => setTimeout(r, 10000));
+          continue; // 429/失敗時等 10 秒後重試（不再提早 return null）
+        }
         const items = parseClubAnnouncements(text, rawData, !!(images && images.length));
         if (items) return items;
       } catch (err) {
@@ -445,9 +503,9 @@ async function refreshSourceNames() {
   for (const s of sources) {
     try {
       if (s.source_type === 'group') {
-        const res = await fetch(`${LINE_API}/group/${encodeURIComponent(s.source_id)}/summary`, {
+        const res = await fetchWithTimeout(`${LINE_API}/group/${encodeURIComponent(s.source_id)}/summary`, {
           headers: { 'Authorization': `Bearer ${CHANNEL_ACCESS_TOKEN}` }
-        });
+        }, 15000);
         if (res.ok) {
           const data = await res.json();
           await runQuery(
@@ -459,9 +517,9 @@ async function refreshSourceNames() {
           console.error('Group summary error:', res.status, s.source_id);
         }
       } else {
-        const res = await fetch(`${LINE_API}/profile/${encodeURIComponent(s.source_id)}`, {
+        const res = await fetchWithTimeout(`${LINE_API}/profile/${encodeURIComponent(s.source_id)}`, {
           headers: { 'Authorization': `Bearer ${CHANNEL_ACCESS_TOKEN}` }
-        });
+        }, 15000);
         if (res.ok) {
           const data = await res.json();
           await runQuery(
@@ -501,12 +559,13 @@ async function syncGroupMembers() {
   const groups = [...seen.keys()].map(id => ({ source_id: id }));
   for (const g of groups) {
     const gInfo = { source_id: g.source_id, ok: false, status: null, apiMembers: 0, fallbackMembers: 0 };
+    let paginationBroke = false;
     try {
       let start;
       const memberIds = [];
       do {
         const url = `${LINE_API}/group/${encodeURIComponent(g.source_id)}/members/ids` + (start ? `?start=${encodeURIComponent(start)}` : '');
-        const res = await fetch(url, { headers: { 'Authorization': `Bearer ${CHANNEL_ACCESS_TOKEN}` } });
+        const res = await fetchWithTimeout(url, { headers: { 'Authorization': `Bearer ${CHANNEL_ACCESS_TOKEN}` } }, 15000);
         if (!res.ok) {
           const body = await res.text().catch(() => '');
           console.error('Group members error:', res.status, g.source_id, body.slice(0, 200));
@@ -518,14 +577,16 @@ async function syncGroupMembers() {
         (data.memberIds || []).forEach(id => memberIds.push(id));
         start = data.next || null;
       } while (start);
+      // 分頁中途失敗（有 start 但迴圈被 break）代表名單不完整
+      if (gInfo.status !== null) paginationBroke = true;
 
       gInfo.apiMembers = memberIds.length;
       gInfo.ok = memberIds.length > 0;
       for (const memberId of memberIds) {
         try {
-          const pRes = await fetch(`${LINE_API}/profile/${encodeURIComponent(memberId)}`, {
+          const pRes = await fetchWithTimeout(`${LINE_API}/profile/${encodeURIComponent(memberId)}`, {
             headers: { 'Authorization': `Bearer ${CHANNEL_ACCESS_TOKEN}` }
-          });
+          }, 15000);
           if (!pRes.ok) { report.failed++; continue; }
           const pData = await pRes.json();
           await runQuery(
@@ -542,17 +603,17 @@ async function syncGroupMembers() {
         }
       }
 
-      // 後備：members/ids 失敗時，至少收錄該群組實際發過訊息的人（sender_id）
-      if (!gInfo.ok) {
+      // 後備：members/ids 失敗或分頁中斷時，收錄該群組實際發過訊息的人（sender_id）補缺口
+      if (!gInfo.ok || paginationBroke) {
         const senders = await getAll(
           "SELECT DISTINCT sender_id FROM line_messages WHERE source_type = 'group' AND source_id = ? AND sender_id IS NOT NULL",
           [g.source_id]
         );
         for (const s of senders) {
           try {
-            const pRes = await fetch(`${LINE_API}/profile/${encodeURIComponent(s.sender_id)}`, {
+            const pRes = await fetchWithTimeout(`${LINE_API}/profile/${encodeURIComponent(s.sender_id)}`, {
               headers: { 'Authorization': `Bearer ${CHANNEL_ACCESS_TOKEN}` }
-            });
+            }, 15000);
             if (!pRes.ok) continue;
             const pData = await pRes.json();
             await runQuery(
