@@ -204,11 +204,18 @@ async function recordGroundingUse() {
 
 async function geminiRequest(system, userText, options = {}) {
   if (!GEMINI_API_KEY) return { text: null, usedGrounding: false, sources: [] };
-  const { grounding = false, maxOutputTokens = 500 } = options;
+  const { grounding = false, maxOutputTokens = 500, images = [] } = options;
   const groundingOn = grounding && (await canUseGrounding());
+  const parts = [];
+  if (userText) parts.push({ text: userText });
+  for (const img of images) {
+    if (img && img.data) {
+      parts.push({ inline_data: { mime_type: img.mimeType || 'image/png', data: img.data } });
+    }
+  }
   const payload = {
     systemInstruction: { parts: [{ text: system }] },
-    contents: [{ role: 'user', parts: [{ text: userText }] }],
+    contents: [{ role: 'user', parts }],
     generationConfig: { temperature: 0.3, maxOutputTokens }
   };
   if (groundingOn) {
@@ -327,8 +334,8 @@ async function summarizeMessages(rows, kind) {
   return callGemini(system, `${header}\n\n對話紀錄（依時間順序）：\n${lines.join('\n')}`, { maxOutputTokens: 1200 });
 }
 
-// ===== AI 公告產生（原始資料 → LINE 群組版／各社個別版） =====
-function parseClubAnnouncements(text, rawData) {
+// ===== AI 公告產生（原始資料 → LINE 群組版／各社個別版；支援圖片判讀） =====
+function parseClubAnnouncements(text, rawData, allowImageIds) {
   const match = String(text).match(/\[\s*\{[\s\S]*\}\s*\]/);
   if (!match) return null;
   let arr;
@@ -340,7 +347,7 @@ function parseClubAnnouncements(text, rawData) {
   if (!Array.isArray(arr)) return null;
   const knownIds = new Set(String(rawData).match(/\b\d{4}\b/g) || []);
   const items = arr
-    .filter(x => x && x.club_id && knownIds.has(String(x.club_id)) && x.message)
+    .filter(x => x && x.club_id && (knownIds.has(String(x.club_id)) || (allowImageIds && /^\d{4}$/.test(String(x.club_id)))) && x.message)
     .map(x => ({
       club_id: String(x.club_id),
       club_name: String(x.club_name || ''),
@@ -349,11 +356,14 @@ function parseClubAnnouncements(text, rawData) {
   return items.length ? items : null;
 }
 
-async function generateAnnouncement(rawData, instructions, mode) {
+async function generateAnnouncement(rawData, instructions, mode, images) {
   const system =
     '你是區會行政助理，負責把管理員提供的原始資料整理成可直接複製貼上的 LINE 通知。' +
     '請用繁體中文、條列式、語氣親切簡潔，只能使用原始資料中出現的內容，不得自行增刪社團或事項。';
   const note = instructions && String(instructions).trim() ? `\n補充指示：${String(instructions).trim()}` : '';
+  const imgNote = images && images.length
+    ? `\n另外附上 ${images.length} 張原始資料圖片（如截圖/名冊/圖表）：請從圖片判讀社號、社名、日期與事項；文字資料與圖片並存時以圖片內容為準，社號以圖片中實際出現的為準。`
+    : '';
 
   if (mode === 'clubs') {
     const prompt = [
@@ -366,12 +376,13 @@ async function generateAnnouncement(rawData, instructions, mode) {
       '',
       '原始資料：',
       String(rawData || ''),
+      imgNote,
       note
     ].join('\n');
     for (let attempt = 0; attempt < 2; attempt++) {
-      const text = await callGemini(system, prompt + (attempt > 0 ? '\n\n再次提醒：只輸出 JSON 陣列，不要加入任何其他說明文字。' : ''), { maxOutputTokens: 3000 });
+      const text = await callGemini(system, prompt + (attempt > 0 ? '\n\n再次提醒：只輸出 JSON 陣列，不要加入任何其他說明文字。' : ''), { maxOutputTokens: 3000, images });
       if (!text) return null;
-      const items = parseClubAnnouncements(text, rawData);
+      const items = parseClubAnnouncements(text, rawData, !!(images && images.length));
       if (items) return items;
     }
     return null;
@@ -387,9 +398,10 @@ async function generateAnnouncement(rawData, instructions, mode) {
     '',
     '原始資料：',
     String(rawData || ''),
+    imgNote,
     note
   ].join('\n');
-  return callGemini(system, prompt, { maxOutputTokens: 1500 });
+  return callGemini(system, prompt, { maxOutputTokens: 1500, images });
 }
 
 // ===== 來源名稱補抓（管理後台按鈕觸發，避免每則訊息呼叫 LINE API） =====

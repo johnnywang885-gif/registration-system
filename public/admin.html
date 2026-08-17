@@ -286,11 +286,19 @@
 
       <!-- AI 公告 -->
       <div class="tab-content" id="tab-announce">
-        <h3 style="font-size:15px; color:#4a3728; margin-bottom:12px;">AI 公告產生與轉發（貼入原始資料 → Gemini 產出群組版＋各社個別版 → 比對 LINE 來源轉發）</h3>
+        <h3 style="font-size:15px; color:#4a3728; margin-bottom:12px;">AI 公告產生與轉發（貼入原始資料或圖片 → Gemini 判讀產出群組版＋各社個別版 → 比對 LINE 來源轉發）</h3>
         <div class="card" style="margin-bottom:16px;">
           <div class="form-group">
-            <label>原始資料（社號/社名/日期/事項，可直接貼上）</label>
+            <label>原始資料（文字或圖片截圖，可直接貼上文字、Ctrl+V 貼圖、拖放圖片或點選上傳）</label>
             <textarea id="annRaw" rows="6" placeholder="例：2408 羅娜 115/7/28&#10;2419 久美（缺名冊紙本）&#10;2426 豐丘 115/7/27&#10;請轉知各社盡速繳費"></textarea>
+          </div>
+          <div class="form-group">
+            <label>來源圖片（最多 5 張，每張 ≤2MB；AI 會直接判讀圖片內的社號/事項）</label>
+            <div id="annDropZone" style="border:2px dashed #c0714a; border-radius:8px; padding:22px 12px; text-align:center; color:#8a6a4f; font-size:14px; cursor:pointer; background:#faf7f2;">
+              點擊選圖、拖放圖片到此，或直接 Ctrl+V 貼上截圖
+            </div>
+            <input type="file" id="annImagesInput" multiple accept="image/*" style="display:none;">
+            <div id="annImagePreview" style="display:flex; flex-wrap:wrap; gap:10px; margin-top:10px;"></div>
           </div>
           <div class="form-group">
             <label>補充指示（選擇性）</label>
@@ -1751,18 +1759,124 @@
       }
     }
 
+    const ANNOUNCE_IMAGE_MAX = 5;
+    const ANNOUNCE_IMAGE_MAX_BYTES = 2 * 1024 * 1024;
+    let announceImages = [];
+
+    function announceAddFiles(files) {
+      for (const file of files) {
+        if (!file.type || !file.type.startsWith('image/')) {
+          toast('不支援的檔案格式：' + (file.name || '未知') + '（僅限圖片）', 'error');
+          continue;
+        }
+        if (file.size > ANNOUNCE_IMAGE_MAX_BYTES) {
+          toast(file.name + ' 超過 2MB', 'error');
+          continue;
+        }
+        if (announceImages.length >= ANNOUNCE_IMAGE_MAX) {
+          toast('圖片最多 ' + ANNOUNCE_IMAGE_MAX + ' 張', 'error');
+          break;
+        }
+        const reader = new FileReader();
+        reader.onload = () => {
+          const dataUrl = String(reader.result || '');
+          const comma = dataUrl.indexOf(',');
+          announceImages.push({
+            name: file.name || '貼上圖片',
+            mime: file.type,
+            data: comma > 0 ? dataUrl.slice(comma + 1) : dataUrl
+          });
+          announceRenderPreview();
+        };
+        reader.readAsDataURL(file);
+      }
+    }
+
+    function announceRemoveImage(idx) {
+      announceImages.splice(idx, 1);
+      announceRenderPreview();
+    }
+
+    function announceRenderPreview() {
+      const box = document.getElementById('annImagePreview');
+      box.innerHTML = '';
+      announceImages.forEach((img, i) => {
+        const wrap = document.createElement('div');
+        wrap.style.cssText = 'position:relative; width:96px; height:96px; border:1px solid #d8c8b4; border-radius:6px; overflow:hidden; background:#fff;';
+        const thumb = document.createElement('img');
+        thumb.src = 'data:' + img.mime + ';base64,' + img.data;
+        thumb.style.cssText = 'width:100%; height:100%; object-fit:cover; display:block;';
+        const remove = document.createElement('button');
+        remove.textContent = '✕';
+        remove.title = '移除 ' + img.name;
+        remove.style.cssText = 'position:absolute; top:2px; right:2px; width:20px; height:20px; line-height:18px; padding:0; border:none; border-radius:50%; background:rgba(0,0,0,.55); color:#fff; font-size:12px; cursor:pointer;';
+        remove.onclick = () => announceRemoveImage(i);
+        const name = document.createElement('div');
+        name.textContent = img.name;
+        name.style.cssText = 'position:absolute; left:0; right:0; bottom:0; background:rgba(0,0,0,.55); color:#fff; font-size:10px; padding:1px 4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;';
+        wrap.appendChild(thumb);
+        wrap.appendChild(name);
+        wrap.appendChild(remove);
+        box.appendChild(wrap);
+      });
+    }
+
+    (function wireAnnounceImages() {
+      const zone = document.getElementById('annDropZone');
+      const input = document.getElementById('annImagesInput');
+      if (!zone || !input) return;
+      zone.addEventListener('click', () => input.click());
+      input.addEventListener('change', () => {
+        announceAddFiles([...input.files]);
+        input.value = '';
+      });
+      ['dragover', 'dragenter'].forEach(ev => zone.addEventListener(ev, e => {
+        e.preventDefault();
+        zone.style.borderColor = '#8a5a33';
+        zone.style.background = '#f3e9dd';
+      }));
+      ['dragleave', 'drop'].forEach(ev => zone.addEventListener(ev, e => {
+        e.preventDefault();
+        zone.style.borderColor = '#c0714a';
+        zone.style.background = '#faf7f2';
+      }));
+      zone.addEventListener('drop', e => {
+        const files = e.dataTransfer && e.dataTransfer.files;
+        if (files && files.length) announceAddFiles([...files]);
+      });
+      document.addEventListener('paste', e => {
+        const items = e.clipboardData && e.clipboardData.items;
+        if (!items) return;
+        const files = [];
+        for (const it of items) {
+          if (it.kind === 'file' && it.type && it.type.startsWith('image/')) {
+            const f = it.getAsFile();
+            if (f) files.push(f);
+          }
+        }
+        if (files.length) {
+          e.preventDefault();
+          announceAddFiles(files);
+        }
+      });
+    })();
+
     async function runAnnounceGenerate() {
       const raw = document.getElementById('annRaw').value.trim();
       const instructions = document.getElementById('annInstructions').value.trim();
       const msg = document.getElementById('annMsg');
-      if (!raw) { toast('請先貼上原始資料', 'error'); return; }
+      if (!raw && announceImages.length === 0) { toast('請先貼上原始資料或上傳圖片', 'error'); return; }
       document.getElementById('loadingAnnounce').classList.remove('hidden');
       msg.textContent = 'AI 產生中（約 10-30 秒）...';
       try {
         const res = await fetch('/api/admin/announce/generate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-          body: JSON.stringify({ raw, instructions })
+          body: JSON.stringify({
+            raw,
+            instructions,
+            images: announceImages.map(img => ({ data: img.data, mime: img.mime }))
+          })
         });
         const data = await res.json();
         if (!res.ok) { toast(data.error || '產生失敗', 'error'); return; }

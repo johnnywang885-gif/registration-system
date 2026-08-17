@@ -1325,16 +1325,46 @@ function startServer() {
   });
 
   // ===== AI 公告產生與轉發 =====
+  const ANNOUNCE_IMAGE_MIME = { 'image/png': 1, 'image/jpeg': 1, 'image/webp': 1, 'image/gif': 1 };
+  const ANNOUNCE_IMAGE_MAX = 5;
+  const ANNOUNCE_IMAGE_MAX_BYTES = 2 * 1024 * 1024;
   app.post('/api/admin/announce/generate', authMiddleware, requirePerm('announce'), async (req, res) => {
     try {
       const raw = req.body && req.body.raw ? String(req.body.raw).trim() : '';
       const instructions = req.body && req.body.instructions ? String(req.body.instructions).trim() : '';
-      if (!raw) return res.status(400).json({ error: '請貼上原始資料' });
+      const images = [];
+      if (req.body && Array.isArray(req.body.images)) {
+        if (req.body.images.length > ANNOUNCE_IMAGE_MAX) {
+          return res.status(400).json({ error: `圖片最多 ${ANNOUNCE_IMAGE_MAX} 張` });
+        }
+        for (const img of req.body.images) {
+          if (!img || typeof img.data !== 'string' || !img.data) {
+            return res.status(400).json({ error: '圖片資料不完整' });
+          }
+          let mime = typeof img.mime === 'string' ? img.mime : '';
+          let data = img.data;
+          if (data.startsWith('data:')) {
+            const comma = data.indexOf(',');
+            if (comma > 0) {
+              if (!mime) mime = data.slice(5, data.indexOf(';')).trim();
+              data = data.slice(comma + 1);
+            }
+          }
+          if (!ANNOUNCE_IMAGE_MIME[mime]) {
+            return res.status(400).json({ error: '圖片格式不支援（僅限 PNG / JPG / WebP / GIF）' });
+          }
+          if (Buffer.from(data, 'base64').length > ANNOUNCE_IMAGE_MAX_BYTES) {
+            return res.status(400).json({ error: '單張圖片不可超過 2MB' });
+          }
+          images.push({ mimeType: mime, data });
+        }
+      }
+      if (!raw && images.length === 0) return res.status(400).json({ error: '請貼上原始資料或上傳圖片' });
       if (raw.length > 8000) return res.status(400).json({ error: '原始資料過長（上限 8000 字）' });
 
       const [broadcast, perClub] = await Promise.all([
-        generateAnnouncement(raw, instructions, 'group'),
-        generateAnnouncement(raw, instructions, 'clubs')
+        generateAnnouncement(raw, instructions, 'group', images),
+        generateAnnouncement(raw, instructions, 'clubs', images)
       ]);
       if (!broadcast && !perClub) return res.status(500).json({ error: 'AI 公告產生失敗，請稍後再試（或確認 Gemini 已設定）' });
       res.json({ broadcast, perClub: perClub || [] });
