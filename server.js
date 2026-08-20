@@ -12,6 +12,7 @@ const { generateToken, authMiddleware, anyAdminMiddleware, adminMiddleware, requ
 const { taipeiToday, phaseState, getSettings, occupancy, promoteStandby, forfeitUnpaidByPhase, runEnforcement, enforceDeadlines } = require('./deadlines');
 const { verifySignature, handleLineEvent, pushToGroup, pushToUser, pushToLineUser, refreshSourceNames, syncGroupMembers, summarizeMessages, generateAnnouncement, recordWebhookDiag } = require('./linebot');
 const { parseUploadedFile, fixFilename } = require('./knowledge_import');
+const { scheduleStatsAnnounce, startPeriodicStatsAnnounce, sendStatsAnnounce } = require('./stats_announce');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -379,6 +380,7 @@ function startServer() {
       const inserted = await getOne("SELECT status FROM registrations WHERE id = ?", [id]);
       newStatus = inserted ? inserted.status : 'registered';
 
+      scheduleStatsAnnounce();
       res.json({ id, message: newStatus === 'standby' ? '報名成功（候補）' : '報名成功' });
     } catch (err) {
       console.error('Registration error:', err.message);
@@ -421,6 +423,7 @@ function startServer() {
       }
 
       await runQuery("DELETE FROM registrations WHERE id = ? AND club_id = ?", [req.params.id, req.user.clubId]);
+      scheduleStatsAnnounce();
       res.json({ message: '刪除成功' });
     } catch (err) {
       console.error('Delete registration error:', err.message);
@@ -539,6 +542,7 @@ function startServer() {
   app.put('/api/admin/payment/:id', authMiddleware, requirePerm('registrations'), async (req, res) => {
     try {
       await runQuery("UPDATE registrations SET status = 'paid' WHERE id = ?", [req.params.id]);
+      scheduleStatsAnnounce();
       res.json({ message: '已標記為已繳費' });
     } catch (err) {
       console.error('Mark paid error:', err.message);
@@ -549,6 +553,7 @@ function startServer() {
   app.put('/api/admin/forfeit/:id', authMiddleware, requirePerm('registrations'), async (req, res) => {
     try {
       await runQuery("UPDATE registrations SET status = 'forfeited' WHERE id = ?", [req.params.id]);
+      scheduleStatsAnnounce();
       res.json({ message: '已標記為棄權' });
     } catch (err) {
       console.error('Forfeit error:', err.message);
@@ -559,6 +564,7 @@ function startServer() {
   app.put('/api/admin/reset-status/:id', authMiddleware, requirePerm('registrations'), async (req, res) => {
     try {
       await runQuery("UPDATE registrations SET status = 'registered' WHERE id = ?", [req.params.id]);
+      scheduleStatsAnnounce();
       res.json({ message: '已重設狀態' });
     } catch (err) {
       console.error('Reset status error:', err.message);
@@ -601,6 +607,7 @@ function startServer() {
         const message = current >= quota ? '已額滿，無需遞補' : '無候補人員需遞補';
         return res.json({ message, promoted: 0 });
       }
+      scheduleStatsAnnounce();
       res.json({ message: `已遞補 ${result.promoted} 人`, promoted: result.promoted });
     } catch (err) {
       console.error('Promote error:', err.message);
@@ -640,6 +647,7 @@ function startServer() {
         return res.status(400).json({ error: '名額已滿，無法遞補' });
       }
       await runQuery("UPDATE registrations SET status = 'registered' WHERE id = ?", [req.params.id]);
+      scheduleStatsAnnounce();
       res.json({ message: `已手動遞補 ${reg.name}（${reg.club_id}）` });
     } catch (err) {
       console.error('Manual promote error:', err.message);
@@ -686,6 +694,7 @@ function startServer() {
       }
       await getDb().batch(stmts, 'write');
 
+      scheduleStatsAnnounce();
       res.json({ message: action === 'approve' ? '已確認繳費' : '已駁回' });
     } catch (err) {
       console.error('Payment review error:', err.message);
@@ -709,6 +718,7 @@ function startServer() {
         }
       ], 'write');
 
+      scheduleStatsAnnounce();
       res.json({ message: '已重設為待審核' });
     } catch (err) {
       console.error('Payment reset error:', err.message);
@@ -904,7 +914,7 @@ function startServer() {
 
   // Settings
   // PUT 只允許更新白名單內的 key（防止覆寫 jwt_secret 等系統內部設定）
-  const SETTINGS_ALLOWED_KEYS = ['phase1_deadline', 'payment_deadline', 'phase2_deadline', 'guaranteed_quota', 'phase1_total_quota', 'line_group_id', 'bot_name'];
+  const SETTINGS_ALLOWED_KEYS = ['phase1_deadline', 'payment_deadline', 'phase2_deadline', 'guaranteed_quota', 'phase1_total_quota', 'line_group_id', 'bot_name', 'stats_announce'];
 
   app.get('/api/admin/settings', authMiddleware, requirePerm('settings'), async (req, res) => {
     try {
@@ -1103,6 +1113,7 @@ function startServer() {
         await dbConn.batch(kbStmts, 'write');
       }
 
+      scheduleStatsAnnounce();
       res.json({ message: `還原成功：${backup.clubs.length} 個社團、${backup.registrations.length} 筆報名` });
     } catch (err) {
       console.error('Restore error:', err.message);
@@ -1118,6 +1129,7 @@ function startServer() {
         "DELETE FROM payment_proofs",
         "DELETE FROM registrations"
       ], 'write');
+      scheduleStatsAnnounce();
       res.json({ message: '報名資料已全部清除（社團與系統設定保留）' });
     } catch (err) {
       console.error('Clear data error:', err.message);
@@ -1615,6 +1627,9 @@ function startServer() {
         await ensureJwtSecret();
         await runEnforcement();
         console.log('Startup enforcement done');
+        // 報名進度自動公告：啟動時先檢查一次「隔 5 日」規則，再啟動每 30 分鐘的週期排程
+        sendStatsAnnounce('periodic');
+        startPeriodicStatsAnnounce();
       } catch (err) {
         console.error('Startup enforcement error:', err.message);
       }

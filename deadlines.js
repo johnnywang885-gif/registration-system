@@ -58,7 +58,7 @@ async function promoteStandby(db, quota, options = {}) {
 }
 
 async function forfeitUnpaidByPhase(db, phase) {
-  await db.execute({
+  const result = await db.execute({
     sql: `UPDATE registrations
           SET status = 'forfeited'
           WHERE phase = ? AND status = 'registered'
@@ -68,11 +68,12 @@ async function forfeitUnpaidByPhase(db, phase) {
             )`,
     args: [phase]
   });
+  return Number(result.rowsAffected) || 0;
 }
 
 async function runEnforcement() {
   const db = getDb();
-  if (!db) return;
+  if (!db) return { changed: false };
 
   const settings = await getSettings();
   const today = taipeiToday();
@@ -81,17 +82,32 @@ async function runEnforcement() {
   const payd = settings.payment_deadline;
   const p2d = settings.phase2_deadline;
 
+  let changed = false;
   if (payd && today > payd) {
-    await forfeitUnpaidByPhase(db, 1);
+    const n = await forfeitUnpaidByPhase(db, 1);
+    if (n > 0) changed = true;
   }
   if (p1d && payd && today > p1d && today <= payd) {
-    await promoteStandby(db, quota);
+    const r = await promoteStandby(db, quota);
+    if (r.promoted > 0) changed = true;
   } else if (payd && p2d && today > payd && today <= p2d) {
-    await promoteStandby(db, quota, { requirePaidClub: true });
+    const r = await promoteStandby(db, quota, { requirePaidClub: true });
+    if (r.promoted > 0) changed = true;
   }
   if (p2d && today > p2d) {
-    await forfeitUnpaidByPhase(db, 2);
+    const n = await forfeitUnpaidByPhase(db, 2);
+    if (n > 0) changed = true;
   }
+
+  // 自動轉換（遞補/棄權）改變了人數 → 觸發報名進度自動公告（lazy require 避免循環依賴）
+  if (changed) {
+    try {
+      require('./stats_announce').scheduleStatsAnnounce();
+    } catch (err) {
+      console.error('stats_announce trigger error:', err.message);
+    }
+  }
+  return { changed };
 }
 
 let lastEnforceTime = 0;

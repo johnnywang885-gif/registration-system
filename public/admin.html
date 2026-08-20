@@ -131,6 +131,15 @@
               <div style="font-size: 12px; color: #999; margin-top: 6px;" id="phaseInfoText"></div>
             </div>
           </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>
+                <input type="checkbox" id="settingStatsAnnounce" style="margin-right: 6px; vertical-align: middle;">
+                報名人數異動時自動公告報名進度到 LINE 群組
+              </label>
+              <div style="font-size: 12px; color: #999; margin-top: 6px;">異動（新增/刪除/繳費/棄權/遞補）後約 15 秒自動推播一次目前報名人數與繳費情形；每月 5、10、15、20、25、30 號亦會各公告一次（當日已公告過則不重複）。取消勾選即完全停用。</div>
+            </div>
+          </div>
           <div class="btn-group">
             <button type="submit" class="btn btn-primary">儲存設定</button>
             <button type="button" class="btn btn-success" id="btnPromote" onclick="runPromote()">執行遞補</button>
@@ -1075,6 +1084,7 @@
         document.getElementById('settingPhase2').value = data.phase2_deadline || '';
         document.getElementById('settingQuota').value = data.guaranteed_quota || 10;
         document.getElementById('settingPhase1Quota').value = data.phase1_total_quota || 160;
+        document.getElementById('settingStatsAnnounce').checked = data.stats_announce !== 'off';
         document.getElementById('settingCurrentPhase').textContent = phaseLabels[data.derived_phase] || data.derived_phase || '-';
         document.getElementById('phaseInfoText').textContent =
           `今日 ${data.today || '-'} ｜ 已占名額 ${data.occupancy ?? '-'} ／ ${data.phase1_total_quota || 160} ｜ 剩餘 ${data.remaining ?? '-'}`;
@@ -1090,7 +1100,8 @@
         payment_deadline: document.getElementById('settingPayment').value,
         phase2_deadline: document.getElementById('settingPhase2').value,
         guaranteed_quota: document.getElementById('settingQuota').value,
-        phase1_total_quota: document.getElementById('settingPhase1Quota').value
+        phase1_total_quota: document.getElementById('settingPhase1Quota').value,
+        stats_announce: document.getElementById('settingStatsAnnounce').checked ? 'on' : 'off'
       };
 
       try {
