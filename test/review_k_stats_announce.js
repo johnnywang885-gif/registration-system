@@ -15,7 +15,7 @@ const BASE = 'http://127.0.0.1:34916';
 const { getDb, getOne, getAll, runQuery } = require('../database');
 const bcrypt = require('bcryptjs');
 const CLUB_HASH = bcrypt.hashSync('2401', 10);
-const { dayMultiple5, buildStatsMessage, sendStatsAnnounce } = require('../stats_announce');
+const { dayMultiple5, buildStatsMessage, collectStats, sendStatsAnnounce } = require('../stats_announce');
 const { runEnforcement } = require('../deadlines');
 
 async function waitDbReady() {
@@ -97,6 +97,48 @@ async function main() {
   console.log('  periodic（今日為 5 倍數日）→ ' + okPeriodic + '（無 LINE 設定，應為 false 且不拋錯）');
   if (okPeriodic !== false) throw new Error('periodic 無 LINE 設定時應回 false');
 
+  // ===== 3b. 失敗記錄：stats_last_error=no_token、stats_fail_count 累計 =====
+  console.log('\n--- 失敗記錄（stats_last_error / stats_fail_count）---');
+  const errRow = await getOne("SELECT value FROM settings WHERE key = 'stats_last_error'");
+  console.log('  stats_last_error=' + (errRow && errRow.value));
+  if (!errRow || errRow.value !== 'no_token') throw new Error('推送失敗應記錄 no_token 原因');
+  const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' });
+  const expectedFails = 1 + (dayMultiple5(todayStr) ? 1 : 0); // periodic 非 5 倍數日會在嘗試前就返回，不計失敗
+  const cntRow = await getOne("SELECT value FROM settings WHERE key = 'stats_fail_count'");
+  console.log('  stats_fail_count=' + (cntRow && cntRow.value) + '（期望 ' + expectedFails + '）');
+  if ((parseInt(cntRow && cntRow.value, 10) || 0) !== expectedFails) throw new Error('失敗計數應為 ' + expectedFails);
+  const dateAgain = await getOne("SELECT value FROM settings WHERE key = 'stats_announce_date'");
+  if (dateAgain) throw new Error('失敗時不應寫 stats_announce_date');
+
+  // ===== 3c. 內容去重：change 快照相同 → 跳過不推送；manual 不受去重限制 =====
+  console.log('\n--- 內容去重（stats_last_snapshot）---');
+  const snap = JSON.stringify(await collectStats());
+  await runQuery("INSERT INTO settings (key, value) VALUES ('stats_last_snapshot', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [snap]);
+  const beforeSkip = (await getOne("SELECT value FROM settings WHERE key = 'stats_fail_count'")).value;
+  const skipped = await sendStatsAnnounce('change');
+  const afterSkip = (await getOne("SELECT value FROM settings WHERE key = 'stats_fail_count'")).value;
+  console.log(`  相同內容 change → ${skipped}，fail_count ${beforeSkip}→${afterSkip}（不變＝確實跳過推送）`);
+  if (skipped !== false) throw new Error('相同內容 change 應回 false');
+  if (beforeSkip !== afterSkip) throw new Error('去重跳過時不應再累計失敗');
+  const manual1 = await sendStatsAnnounce('manual');
+  const afterManual = (await getOne("SELECT value FROM settings WHERE key = 'stats_fail_count'")).value;
+  console.log(`  manual → ${manual1}（無 token 必失敗），fail_count=${afterManual}`);
+  if (manual1 !== false) throw new Error('無 LINE 設定時 manual 也應回 false');
+  if (parseInt(afterManual, 10) !== parseInt(beforeSkip, 10) + 1) throw new Error('manual 應繞過去重並累計一次失敗');
+  await runQuery("DELETE FROM settings WHERE key = 'stats_last_snapshot'", []);
+
+  // ===== 3d. 連續失敗 ≥3 → 自動開一張意見回饋單（同日不重複開單） =====
+  console.log('\n--- 連續失敗自動開單 ---');
+  await runQuery("UPDATE settings SET value = '99' WHERE key = 'stats_fail_count'", []);
+  await sendStatsAnnounce('manual'); // 必跨過門檻 → 開單
+  const fb1 = await getAll("SELECT id FROM feedback WHERE message LIKE '%【報名公告推播失敗】%'");
+  console.log('  開單筆數=' + fb1.length);
+  if (fb1.length !== 1) throw new Error('跨過門檻後應恰好開一張意見回饋單');
+  await sendStatsAnnounce('manual'); // 同日再次失敗，不應重複開單
+  const fb2 = await getAll("SELECT id FROM feedback WHERE message LIKE '%【報名公告推播失敗】%'");
+  console.log('  再失敗一次後筆數=' + fb2.length + '（同日去重）');
+  if (fb2.length !== 1) throw new Error('同日不應重複開單');
+
   // ===== 4. 停用開關：stats_announce=off → 不發送 =====
   console.log('\n--- stats_announce=off 停用 ---');
   await runQuery("INSERT INTO settings (key, value) VALUES ('stats_announce', 'off') ON CONFLICT(key) DO UPDATE SET value = excluded.value", []);
@@ -156,6 +198,23 @@ async function main() {
   const regData = await regRes.json();
   console.log('  status=' + regRes.status + ' message=' + (regData.message || regData.error || ''));
   if (regRes.status !== 200) throw new Error('報名應成功');
+
+  // ===== 7b. 測試推播端點：admin 可用（無 LINE 設定回 ok=false+detail）、一般社團 403、公開 API 不洩漏 stats_* =====
+  console.log('\n--- POST /api/admin/stats-announce/test ---');
+  const tRes = await fetch(`${BASE}/api/admin/stats-announce/test`, { method: 'POST', headers: auth });
+  const tData = await tRes.json();
+  console.log('  status=' + tRes.status + ' ok=' + tData.ok + ' detail=' + (tData.detail || ''));
+  if (tRes.status !== 200) throw new Error('test endpoint 應回 200');
+  if (tData.ok !== false) throw new Error('無 LINE 設定時應回 ok=false');
+  if (!tData.detail) throw new Error('失敗時應帶 detail 原因');
+  const clubTest = await fetch(`${BASE}/api/admin/stats-announce/test`, { method: 'POST', headers: clubAuth });
+  console.log('  一般社團帳號 → ' + clubTest.status);
+  if (clubTest.status !== 403) throw new Error('一般社團帳號呼叫測試推播應被拒 403');
+  const pub2 = await (await fetch(`${BASE}/api/summary`)).json();
+  if (pub2.settings.stats_last_error || pub2.settings.stats_last_ok_at || pub2.settings.stats_fail_count || pub2.settings.stats_announce) {
+    throw new Error('/api/summary 不應洩漏 stats_ 內部設定');
+  }
+  console.log('  公開 summary 已過濾 stats_* OK');
 
   // ===== 8. runEnforcement 回傳 changed 旗標（未來截止日 → 無異動） =====
   console.log('\n--- runEnforcement changed 旗標 ---');

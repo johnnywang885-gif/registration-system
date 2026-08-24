@@ -138,6 +138,8 @@
                 報名人數異動時自動公告報名進度到 LINE 群組
               </label>
               <div style="font-size: 12px; color: #999; margin-top: 6px;">異動（新增/刪除/繳費/棄權/遞補）後約 15 秒自動推播一次目前報名人數與繳費情形；每月 5、10、15、20、25、30 號亦會各公告一次（當日已公告過則不重複）。取消勾選即完全停用。</div>
+              <div id="statsAnnounceStatus" style="font-size: 13px; margin-top: 8px;">尚未公告過</div>
+              <button type="button" class="btn btn-sm btn-warning mt-10" onclick="testStatsAnnounce()">測試推播（強制發送一次）</button>
             </div>
           </div>
           <div class="btn-group">
@@ -1088,8 +1090,48 @@
         document.getElementById('settingCurrentPhase').textContent = phaseLabels[data.derived_phase] || data.derived_phase || '-';
         document.getElementById('phaseInfoText').textContent =
           `今日 ${data.today || '-'} ｜ 已占名額 ${data.occupancy ?? '-'} ／ ${data.phase1_total_quota || 160} ｜ 剩餘 ${data.remaining ?? '-'}`;
+        renderStatsAnnounceStatus(data);
       } catch (err) {
         console.error(err);
+      }
+    }
+
+    // 報名進度自動公告狀態（上次成功／失敗原因，由 settings 的 stats_* 鍵帶入）
+    function renderStatsAnnounceStatus(d) {
+      const el = document.getElementById('statsAnnounceStatus');
+      if (!el) return;
+      const fmt = iso => iso ? new Date(iso).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' }) : '';
+      const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+      if (d.stats_last_error) {
+        const okPart = d.stats_last_ok_at
+          ? `<span style="color:#5a8c5a;">上次成功：${fmt(d.stats_last_ok_at)}</span>`
+          : `<span style="color:#8d7b6b;">上線以來從未成功公告</span>`;
+        el.innerHTML = `<span style="color:#b85c4f;">⚠ 上次推播失敗（${fmt(d.stats_last_error_at)}）：${esc(d.stats_last_error)}</span><span style="color:#c4b5a6;"> ｜ </span>${okPart}`;
+      } else if (d.stats_last_ok_at) {
+        el.innerHTML = `<span style="color:#5a8c5a;">✓ 上次成功公告：${fmt(d.stats_last_ok_at)}</span>`;
+      } else {
+        el.textContent = '尚未公告過';
+      }
+    }
+
+    let testStatsBusy = false;
+    async function testStatsAnnounce() {
+      if (testStatsBusy) return;
+      testStatsBusy = true;
+      try {
+        const res = await fetch('/api/admin/stats-announce/test', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (res.status === 401) { localStorage.clear(); window.location.href = '/'; return; }
+        const data = await res.json().catch(() => ({}));
+        if (data.ok) toast('已推播報名進度到 LINE 主群組', 'success');
+        else toast('推播失敗：' + (data.detail || data.error || '未知原因'), 'error');
+        loadSettings();
+      } catch (err) {
+        toast('操作失敗，請稍後再試', 'error');
+      } finally {
+        testStatsBusy = false;
       }
     }
 

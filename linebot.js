@@ -99,16 +99,40 @@ async function pushToUser(userId, text) {
   return pushToLineUser(userId, text);
 }
 
-async function pushToLineUser(to, text) {
-  if (!CHANNEL_ACCESS_TOKEN || !to) return false;
+// 詳細結果版推播：回傳 { ok, status, error }，error 為簡短原因（no_token/no_target 或 LINE 錯誤訊息），供報名進度公告診斷
+async function pushToDetail(to, text) {
+  if (!CHANNEL_ACCESS_TOKEN) return { ok: false, status: 0, error: 'no_token' };
+  if (!to) return { ok: false, status: 0, error: 'no_target' };
   try {
     const res = await lineRequest('/message/push', { to, messages: [{ type: 'text', text }] });
-    if (!res.ok) console.error('LINE push error:', res.status, await res.text().catch(() => ''));
-    return res.ok;
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      console.error('LINE push error:', res.status, body);
+      let error = `HTTP ${res.status}`;
+      try {
+        const j = JSON.parse(body);
+        if (j && j.message) error = j.message;
+      } catch (e) {}
+      return { ok: false, status: res.status, error };
+    }
+    return { ok: true, status: res.status, error: null };
   } catch (err) {
     console.error('LINE push error:', err.message);
-    return false;
+    return { ok: false, status: 0, error: err.message };
   }
+}
+
+async function pushToLineUser(to, text) {
+  return (await pushToDetail(to, text)).ok;
+}
+
+// 推播到主群組的詳細結果版（報名進度公告診斷用）
+async function pushToGroupDetail(text) {
+  if (!CHANNEL_ACCESS_TOKEN) return { ok: false, status: 0, error: 'no_token' };
+  const row = await getOne("SELECT value FROM settings WHERE key = 'line_group_id'");
+  const groupId = row && row.value;
+  if (!groupId) return { ok: false, status: 0, error: 'no_group' };
+  return pushToDetail(groupId, text);
 }
 
 // ===== 對話紀錄收集 =====
@@ -780,4 +804,4 @@ async function handleLineEvent(event) {
   await replyMessage(event.replyToken, answer.text || '抱歉，因忙線中暫時無法回答。您的問題我已記錄，稍後回覆您，請見諒！');
 }
 
-module.exports = { verifySignature, handleLineEvent, pushToGroup, pushToUser, pushToLineUser, refreshSourceNames, syncGroupMembers, summarizeMessages, generateAnnouncement, getGroundingUsage, canUseGrounding, recordGroundingUse, recordWebhookDiag, answerQuestion, retrieveKnowledge };
+module.exports = { verifySignature, handleLineEvent, pushToGroup, pushToGroupDetail, pushToUser, pushToLineUser, refreshSourceNames, syncGroupMembers, summarizeMessages, generateAnnouncement, getGroundingUsage, canUseGrounding, recordGroundingUse, recordWebhookDiag, answerQuestion, retrieveKnowledge };

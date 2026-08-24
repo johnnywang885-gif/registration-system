@@ -43,7 +43,7 @@ function sanitizeSettings(settings, options = {}) {
   const out = {};
   for (const [key, value] of Object.entries(settings)) {
     if (key === 'jwt_secret') continue;
-    if (publicOnly && (key.startsWith('grounding_') || key.startsWith('webhook_'))) continue;
+    if (publicOnly && (key.startsWith('grounding_') || key.startsWith('webhook_') || key.startsWith('stats_'))) continue;
     out[key] = value;
   }
   return out;
@@ -1279,6 +1279,23 @@ function startServer() {
     } catch (err) {
       console.error('Line announce error:', err.message);
       res.status(500).json({ error: '推播失敗，請稍後再試' });
+    }
+  });
+
+  // 報名進度公告測試推播（強制立即發送一次、繞過內容去重；回傳詳細結果供後台診斷）
+  app.post('/api/admin/stats-announce/test', authMiddleware, requirePerm('settings'), async (req, res) => {
+    try {
+      const ok = await sendStatsAnnounce('manual');
+      const errRow = ok ? null : await getOne("SELECT value FROM settings WHERE key = 'stats_last_error'");
+      const lastOk = await getOne("SELECT value FROM settings WHERE key = 'stats_last_ok_at'");
+      res.json({
+        ok,
+        detail: ok ? null : ((errRow && errRow.value) || '未知原因'),
+        last_ok_at: (lastOk && lastOk.value) || null
+      });
+    } catch (err) {
+      console.error('Stats announce test error:', err.message);
+      res.status(500).json({ error: '操作失敗，請稍後再試' });
     }
   });
 
