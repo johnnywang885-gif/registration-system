@@ -1,0 +1,13 @@
+name: keep-render-awake
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping /health
+        run: curl -fsS --max-time 30 https://registration-system-bxgr.onrender.com/health

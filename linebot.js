@@ -14,7 +14,7 @@ const GROUNDING_MAX_MONTH = (() => {
 const LINE_API = 'https://api.line.me/v2/bot';
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
 const GEMINI_API = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
-const SYSTEM_URL = process.env.SYSTEM_URL || 'https://registration-system-production-4e05.up.railway.app';
+const SYSTEM_URL = process.env.SYSTEM_URL || 'https://registration-system-bxgr.onrender.com';
 
 const FEEDBACK_KEYWORDS = ['意見', '建議', '回報', '改進', '壞掉', 'bug', '臭蟲'];
 
