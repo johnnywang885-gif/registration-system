@@ -183,9 +183,12 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 - Real Turso creds are readable via the `variables` query — safe for **read-only SELECT** verification of production state (e.g., `settings.line_group_id`), never run enforcement/backup-restore against the live DB.
 
 ### Deploy Flow
-- Push to `master` → Railway auto-deploys via GitHub webhook
+- **2026-08-29 遷移至 Render（免費層）**：Railway 帳號 Trial 期滿（8/24 後）所有部署被暫停 → 正式環境遷到 Render Free；Railway 專案原封不動留作滾回（試用期滿後資料保留至 ~9/23，此後綁卡回收、專案仍可刪）
+- Push to `master` → **Render auto-deploys**（`autoDeploy=yes`，GitHub webhook 觸發）
 - Healthcheck: `GET /health` must return 200 within 30s
-- Current production URL: `https://registration-system-production-4e05.up.railway.app` (`/health` and `/api/summary` are public for quick checks)
+- **Render service ID: `srv-da9a3opf2nfc73erdav0`**（截圖上的 ID 少字，以 API 回傳為準）；Render API key 由使用者於 dashboard Account Settings→API Keys 建立（`rnd_` 開頭）；env 變數修正用 `PUT /v1/services/{id}/env-vars/{key}` body `{"value":"..."}`（collection endpoint 405，單 key 端點才對）
+- Current production URL: `https://registration-system-bxgr.onrender.com`（`/health` and `/api/summary` are public for quick checks）
+- **Render Free 代價**：閒置 15 分鐘休眠、冷啟動 ~1 分鐘；由 repo `.github/workflows/keepalive.yml`（GitHub Actions 每 10 分鐘 ping `/health`，public repo 免費）保持清醒，每月耗 ~720-744 小時 ⇒ 750 小時限額內；`uploads/` 不持久（重啟/休眠即清空，與 Railway 相同）
 - **uploads/ is NOT persistent on Railway**: every deploy/restart wipes uploaded payment-proof files (DB rows keep the `file_path`, but `GET /api/payment/file/:id` then 404s). Backup JSON does NOT include file contents. Accepted as-is — tell admins clubs can re-upload.
 - **Detect whether a deploy actually switched versions**: `POST /api/login` with a ~180KB body → new code (10mb `express.json`) parses fine and returns a JSON 4xx (e.g. `400` 「請輸入帳號和密碼」 without credentials), old code (100kb limit) returns HTML 500. Useful because rolling deploys may never drop `/health`.
 - The `railway` CLI is installed but **not linked/logged in** in this environment (`railway whoami` / `railway variables` print nothing). Use the GraphQL API with an account token instead (see below) — do not assume `railway` commands work.
