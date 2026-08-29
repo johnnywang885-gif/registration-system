@@ -44,7 +44,7 @@ async function call(tools) {
     return;
   }
   if (search.ok) {
-    console.log(`結論：搜尋可用（付費 key）${search.grounded ? '，回應含 grounding metadata' : ''}。可於 Railway 設定 GEMINI_GROUNDING=on 啟用。`);
+    console.log(`結論：搜尋可用（付費 key）${search.grounded ? '，回應含 grounding metadata' : ''}。可於 Render 設定 GEMINI_GROUNDING=on 啟用。`);
   } else {
     console.log('結論：一般問答可用，但搜尋不可用（free tier 或該模型不支援）→ 搜尋需付費 key。');
   }

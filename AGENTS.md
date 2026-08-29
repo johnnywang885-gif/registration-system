@@ -1,7 +1,7 @@
 # AGENTS.md
 
 ## Project Overview
-區會報名系統 (Registration System) — Node.js/Express app with Turso cloud database (libSQL), JWT auth, deployed on Railway.
+區會報名系統 (Registration System) — Node.js/Express app with Turso cloud database (libSQL), JWT auth, deployed on **Render**（2026-08-29 由 Railway 遷入，Railway 專案留作滾回備用）.
 
 ## Quick Start
 ```bash
@@ -11,13 +11,13 @@ npm run dev         # development with file watching (node --watch)
 ```
 No lint, typecheck, or test scripts exist. This is a plain JS project with no build step.
 
-`dotenv` auto-loads `.env` (gitignored). The local `.env` has **empty** `TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN` — real Turso credentials exist only on Railway. `npm start` locally boots fine but every `/api` call returns 500 until a real Turso URL/token is supplied.
+`dotenv` auto-loads `.env` (gitignored). The local `.env` has **empty** `TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN` — real Turso credentials live in the hosting service's env vars (now Render). `npm start` locally boots fine but every `/api` call returns 500 until a real Turso URL/token is supplied.
 
 **`README.md` is stale** — trust this file over it (README predates LINE bot/Gemini/knowledge tables, and its "JWT_SECRET 未設定會使登入失效" claim is wrong: `JWT_SECRET` is now auto-generated and persisted in Turso `settings`).
 
 ## Verification (no test framework)
 - Syntax check: `node --check server.js deadlines.js database.js auth.js linebot.js knowledge_import.js stats_announce.js`
-- Local Node must be **≥20.16** (pdf-parse v2 requires `process.getBuiltinModule`); `package.json` `"engines"` pins Railway to Node 22 — don't remove it.
+- Local Node must be **≥20.16** (pdf-parse v2 requires `process.getBuiltinModule`); `package.json` `"engines"` pins the host to Node 22 — don't remove it.
 - `@libsql/client` accepts `file:` URLs, so the whole stack (database.js + deadlines.js + server.js) runs against a local SQLite file: set `TURSO_DATABASE_URL=file:C:/abs/path.db`, `TURSO_AUTH_TOKEN=`, then call `initDatabase()` + `runEnforcement()` directly or boot `server.js`.
 - Real-data offline test (never touches production): login as admin (use the real production password — see Auth section; the default `admin123` works only on fresh local DBs) → `GET /api/admin/backup` returns full JSON (`clubs`, `registrations`, `payment_proofs`, `settings`, `feedback`, `line_messages`, `line_sources`, `knowledge`) → seed it into a local `file:` copy → run `deadlines.js` enforcement against the copy. Do NOT point enforcement at the real Turso DB.
 - `deadlines.js` `taipeiToday()` always uses the real Taipei date — to simulate other phases, edit the `settings` rows (deadline dates) in the local copy, not the clock.
@@ -52,7 +52,7 @@ No lint, typecheck, or test scripts exist. This is a plain JS project with no bu
 ## Architecture
 
 ### Startup Order (critical — do not rearrange)
-`server.js` `startServer()` is **synchronous** (not async). The order matters for Railway healthcheck:
+`server.js` `startServer()` is **synchronous** (not async). The order matters for the hosting provider's healthcheck:
 
 1. Register healthcheck route (`/health`)
 2. Register ALL other routes (public + API)
@@ -60,7 +60,7 @@ No lint, typecheck, or test scripts exist. This is a plain JS project with no bu
 4. `app.listen()` — server starts accepting requests
 5. `initDatabase()` runs **non-blocking** in background (`.then().catch()`)
 
-If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fails and the deploy dies with a 502.
+If `initDatabase()` blocks or runs before `app.listen()`, the hosting provider's healthcheck fails and the deploy dies with a 502.
 
 ### Server Structure (`server.js`)
 - All routes inside `startServer()` function (not top-level)
@@ -148,9 +148,9 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 - `js/guide.js` — guided tour engine (no dependencies, vanilla JS; first-visit auto-play + replay button)
 - `images/culroc-logo.jpg` — CULROC logo（CSS `mix-blend-mode: darken` 模擬去背）
 
-## Railway Deployment
+## Deployment (now Render; Railway kept as fallback)
 
-### Env Vars (via Railway API or Dashboard)
+### Env Vars (Render Dashboard or API; Railway equivalent if rolling back)
 | Var | Required | Notes |
 |-----|----------|-------|
 | `TURSO_DATABASE_URL` | Yes | `libsql://...` format |
@@ -160,14 +160,14 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 | `LINE_CHANNEL_ACCESS_TOKEN` | No | LINE Messaging API access token（回覆/推播用） |
 | `GEMINI_API_KEY` | No | Gemini API key（bot AI 回覆用；未設時 bot 回覆「AI 助理尚未設定」） |
 | `GEMINI_MODEL` | No | Gemini 模型名稱（預設 `gemini-3.5-flash-lite`，可改任何模型名如 `gemini-2.5-flash`；改動後重啟生效） |
-| `GEMINI_GROUNDING` | No | 設 `on` 才啟用 Gemini Grounding with Google Search（bot 可上網查資料再回答）；**Free tier key 無法使用搜尋**，呼叫失敗會自動退回首選模式，bot 不中斷（付費 key 後於 Railway 開啟） |
+| `GEMINI_GROUNDING` | No | 設 `on` 才啟用 Gemini Grounding with Google Search（bot 可上網查資料再回答）；**Free tier key 無法使用搜尋**，呼叫失敗會自動退回首選模式，bot 不中斷（付費 key 後於 Render 開啟） |
 | `GEMINI_GROUNDING_MAX_MONTH` | No | 每月網路搜尋成功次數上限（預設 `4800`，刻意低於付費層每月 5,000 次免費搜尋額度）；用量記在 `settings` 表 key `grounding_YYYY-MM`（依 Taipei 月份自動歸零），達標後自動停用搜尋（bot 改一般回答）下個月自動恢復——防觸動付費 |
 | `SYSTEM_URL` | No | 對外網址（bot 知識庫與簡介連結用，預設為目前 production URL） |
-| `PORT` | No | Set automatically by Railway |
+| `PORT` | No | Set automatically by the hosting platform |
 
 **Railway API gotcha**: `variableUpsert` mutation MUST include `serviceId` param, otherwise the variable is set at project level but not exposed to the running service. Query `services` to get the service ID first.
 
-**Current live state (2026-08)**: production has `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `LINE_CHANNEL_SECRET`, `LINE_CHANNEL_ACCESS_TOKEN`, `GEMINI_API_KEY` (paid key — grounding 可用) set at service level; 2026-08-13 另設 `GEMINI_MODEL=gemini-2.5-flash`（預設 `gemini-3.5-flash-lite` 對該 key 搜尋會 429）與 `GEMINI_GROUNDING=on`（三層問答流程完整啟用）。`JWT_SECRET` is auto-generated into Turso settings. LINE bot (AI Q&A, feedback, group announce) is fully live and verified; LINE 彙整/轉送（line-sources/digest/send）隨 2026-08-10 部署上線、AI 公告（announce generate/match/send + LINE 關鍵字草稿觸發）隨 2026-08-11 部署上線（body-probe 已確認新程式碼生效）。2026-08-12：群組成員同步（announce/sync，含 line_messages 發送者後備）＋ webhook 送達診斷（line-diag）上線；已確認正式環境為**一般官方帳號**（members/ids 不可用，同步只能收錄有發言過的成員）且個別推播需各社先加好友。2026-08-13：AI 知識庫與三層問答上線（知識庫 → 網路搜尋註明來源 → 忙線＋自動開單）。同日第二波：文書上傳匯入（.pdf/.docx/.xls/.xlsx/.txt）上線——因 pdf-parse v2 需 Node ≥20.16 而 Railway 預設 Node 18 曾兩次部署 healthcheck 失敗，`package.json` 已加 `"engines": {"node": "22.x"}` 固定 Node 22 後才成功。2026-08-15：全域審查三批修復上線（71de514/6dc7e99/76603be）——19 個 async 路由補 try/catch、settings PUT 白名單防覆寫 `jwt_secret`、JWT secret 記憶化、webhook 600/min 限流、全站 500 錯誤訊息去內部細節、前端 XSS escape 補漏、登入/上傳防連點、`importClubs()` null guard、deadline 空字串防護；`test/review_i_security.js` 常駐守護上述修復。2026-08-17：全域審查批1（資安 HIGH）上線——`/api/summary`/settings/backup 全面過濾 `jwt_secret`（公開 API 另濾 grounding/webhook 計數器）、`reset-password` 加 `is_admin=0` 守衛、`importClubs`/POST clubs 改 ON CONFLICT DO UPDATE 守衛（club_id 正整數驗證，無法覆寫管理帳號）、付款檔案路徑 containment＋跨社讀取需 `payments` 權限、restore 過濾 `is_admin=1` 帳號與惡意 `file_path`/`jwt_secret`；`review_i_security.js` 擴充守護（S1-S6）。同日第二波（04c1587）：Gemini/LINE 穩健性——`doRequest` 重寫（429/5xx/網路錯誤重試、Retry-After + `retry after Xs` 正則、退避上限 20s、60s timeout）、Gemini 全域併發上限 2、grounding 計數器只在真搜尋時記錄、announce[clubs] dead-code retry 修正、`answerQuestion` try/catch 確定性走忙線開單、`replyMessage`/`pushToLineUser` 防 throw、`syncGroupMembers` 分頁中斷補 fallback、FEEDBACK_KEYWORDS 移除「希望」。2026-08-17 批次 3（818455e）：AI 公告圖片總量上限 6MB（伺服器端驗證）、admin.html 防連點（announceBusy Set）＋全域 fetch 401 處理（清 localStorage 跳登入頁）＋次管理者登入後自動載入首個可見頁籤、guide.js tooltip 測量修復。同日批次 4（f353850，穩健性 LOW）：restore **預先完整驗證**（含 `jwt_secret`/惡意 `file_path`/無效社號 → 400 拒絕且完全不動 DB；`file_path` 前導斜線剝除後驗證，舊版 `/uploads/...` 備份正常還原）、import-excel 改獨立 memory multer（xlsx 不再被圖片 filter 擋掉、無孤兒檔）、註冊/編輯欄位長度上限、PUT clubs 社名非空、繳費上傳魔數 sniff（JPG/PNG/GIF/PDF 檔頭驗證，不符 400 且刪檔）、rate limit（報名/意見 30/min、上傳/AI 公告 10/min）、全站 security headers（nosniff/DENY/same-origin）、LINE webhook 事件併發上限 5（佇列）、LINE push/reply 429 重試一次（尊重 Retry-After）、`parseClubAnnouncements` 同社去重、group-mode 公告 null 補一次重試、`promoteStandby` 改單一語句原子遞補（讀取＋寫入無空隙，併發不會超額）、payment review/reset 交易化（batch 'write'）、`GEMINI_GROUNDING_MAX_MONTH` NaN 守衛、Gemini key 改 `X-Goog-Api-Key` header、knowledge Excel 每工作表 200k 字上限、migration catch 只吞「duplicate column」；`review_i_security.js` 擴充守護（S1e 前導斜線備份還原、M2b 魔數、M2c 欄位長度、M2d xlsx 匯入）。2026-08-20：報名進度自動公告上線（`stats_announce.js`）——報名人數異動（15 秒 debounce）或每月 5/10/15/20/25/30 號自動推播目前報名人數及繳費情形到 LINE 主群組；`runEnforcement()` 回傳 `changed` 旗標、settings PUT 白名單新增 `stats_announce`（後台 系統設定 tab 勾選控制）；`test/review_k_stats_announce.js` 常駐守護。2026-08-24：stats 公告可觀測性上線（詳見「報名進度自動公告」節）——起因為 8/23 有新增報名但群組未收到公告，排查確認功能自 8/20 上線起在正式環境從未成功推送（settings 無 `stats_announce_date`），根因指向 LINE push 持續失敗；新增失敗記錄/連續失敗自動開單/內容去重省額度與 `POST /api/admin/stats-announce/test` 測試推播端點＋後台「測試推播」按鈕。同日測試推播證實根因＝**LINE 免費每月 200 則 push 額度耗盡**（`You have reached your monthly limit`，bot 仍在主群組非退群），9/1 額度重置後自動恢復。
+**Current live state (自 2026-08-29 起 host = Render，功能沿革如下)**: production has `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `LINE_CHANNEL_SECRET`, `LINE_CHANNEL_ACCESS_TOKEN`, `GEMINI_API_KEY` (paid key — grounding 可用) set at service level; 2026-08-13 另設 `GEMINI_MODEL=gemini-2.5-flash`（預設 `gemini-3.5-flash-lite` 對該 key 搜尋會 429）與 `GEMINI_GROUNDING=on`（三層問答流程完整啟用）。`JWT_SECRET` is auto-generated into Turso settings. LINE bot (AI Q&A, feedback, group announce) is fully live and verified; LINE 彙整/轉送（line-sources/digest/send）隨 2026-08-10 部署上線、AI 公告（announce generate/match/send + LINE 關鍵字草稿觸發）隨 2026-08-11 部署上線（body-probe 已確認新程式碼生效）。2026-08-12：群組成員同步（announce/sync，含 line_messages 發送者後備）＋ webhook 送達診斷（line-diag）上線；已確認正式環境為**一般官方帳號**（members/ids 不可用，同步只能收錄有發言過的成員）且個別推播需各社先加好友。2026-08-13：AI 知識庫與三層問答上線（知識庫 → 網路搜尋註明來源 → 忙線＋自動開單）。同日第二波：文書上傳匯入（.pdf/.docx/.xls/.xlsx/.txt）上線——因 pdf-parse v2 需 Node ≥20.16 而 Railway 預設 Node 18 曾兩次部署 healthcheck 失敗，`package.json` 已加 `"engines": {"node": "22.x"}` 固定 Node 22 後才成功。2026-08-15：全域審查三批修復上線（71de514/6dc7e99/76603be）——19 個 async 路由補 try/catch、settings PUT 白名單防覆寫 `jwt_secret`、JWT secret 記憶化、webhook 600/min 限流、全站 500 錯誤訊息去內部細節、前端 XSS escape 補漏、登入/上傳防連點、`importClubs()` null guard、deadline 空字串防護；`test/review_i_security.js` 常駐守護上述修復。2026-08-17：全域審查批1（資安 HIGH）上線——`/api/summary`/settings/backup 全面過濾 `jwt_secret`（公開 API 另濾 grounding/webhook 計數器）、`reset-password` 加 `is_admin=0` 守衛、`importClubs`/POST clubs 改 ON CONFLICT DO UPDATE 守衛（club_id 正整數驗證，無法覆寫管理帳號）、付款檔案路徑 containment＋跨社讀取需 `payments` 權限、restore 過濾 `is_admin=1` 帳號與惡意 `file_path`/`jwt_secret`；`review_i_security.js` 擴充守護（S1-S6）。同日第二波（04c1587）：Gemini/LINE 穩健性——`doRequest` 重寫（429/5xx/網路錯誤重試、Retry-After + `retry after Xs` 正則、退避上限 20s、60s timeout）、Gemini 全域併發上限 2、grounding 計數器只在真搜尋時記錄、announce[clubs] dead-code retry 修正、`answerQuestion` try/catch 確定性走忙線開單、`replyMessage`/`pushToLineUser` 防 throw、`syncGroupMembers` 分頁中斷補 fallback、FEEDBACK_KEYWORDS 移除「希望」。2026-08-17 批次 3（818455e）：AI 公告圖片總量上限 6MB（伺服器端驗證）、admin.html 防連點（announceBusy Set）＋全域 fetch 401 處理（清 localStorage 跳登入頁）＋次管理者登入後自動載入首個可見頁籤、guide.js tooltip 測量修復。同日批次 4（f353850，穩健性 LOW）：restore **預先完整驗證**（含 `jwt_secret`/惡意 `file_path`/無效社號 → 400 拒絕且完全不動 DB；`file_path` 前導斜線剝除後驗證，舊版 `/uploads/...` 備份正常還原）、import-excel 改獨立 memory multer（xlsx 不再被圖片 filter 擋掉、無孤兒檔）、註冊/編輯欄位長度上限、PUT clubs 社名非空、繳費上傳魔數 sniff（JPG/PNG/GIF/PDF 檔頭驗證，不符 400 且刪檔）、rate limit（報名/意見 30/min、上傳/AI 公告 10/min）、全站 security headers（nosniff/DENY/same-origin）、LINE webhook 事件併發上限 5（佇列）、LINE push/reply 429 重試一次（尊重 Retry-After）、`parseClubAnnouncements` 同社去重、group-mode 公告 null 補一次重試、`promoteStandby` 改單一語句原子遞補（讀取＋寫入無空隙，併發不會超額）、payment review/reset 交易化（batch 'write'）、`GEMINI_GROUNDING_MAX_MONTH` NaN 守衛、Gemini key 改 `X-Goog-Api-Key` header、knowledge Excel 每工作表 200k 字上限、migration catch 只吞「duplicate column」；`review_i_security.js` 擴充守護（S1e 前導斜線備份還原、M2b 魔數、M2c 欄位長度、M2d xlsx 匯入）。2026-08-20：報名進度自動公告上線（`stats_announce.js`）——報名人數異動（15 秒 debounce）或每月 5/10/15/20/25/30 號自動推播目前報名人數及繳費情形到 LINE 主群組；`runEnforcement()` 回傳 `changed` 旗標、settings PUT 白名單新增 `stats_announce`（後台 系統設定 tab 勾選控制）；`test/review_k_stats_announce.js` 常駐守護。2026-08-24：stats 公告可觀測性上線（詳見「報名進度自動公告」節）——起因為 8/23 有新增報名但群組未收到公告，排查確認功能自 8/20 上線起在正式環境從未成功推送（settings 無 `stats_announce_date`），根因指向 LINE push 持續失敗；新增失敗記錄/連續失敗自動開單/內容去重省額度與 `POST /api/admin/stats-announce/test` 測試推播端點＋後台「測試推播」按鈕。同日測試推播證實根因＝**LINE 免費每月 200 則 push 額度耗盡**（`You have reached your monthly limit`，bot 仍在主群組非退群），9/1 額度重置後自動恢復。
 
 ### Railway GraphQL API (account token — works, `railway` CLI doesn't)
 - Endpoint: `https://backboard.railway.com/graphql/v2` (or `backboard.railway.app`), header `Authorization: Bearer <token>`, `Content-Type: application/json`, body `{"query":"..."}`.
@@ -195,14 +195,14 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 - If deploy fails with "Healthcheck failure" or "Application failed to respond":
   - Check that routes are registered before `initDatabase()`
   - Check that `initDatabase()` is non-blocking
-  - Check that Railway env vars are set at service level (not just project level)
+  - Check that env vars are set on the hosting platform (Render first; Railway if rolling back)
 
 ### Common Failure Modes
 1. **502 on all API routes**: Routes not registered (blocked by `await initDatabase()`)
 2. **500 on API routes + pages work**: DB not connected (env vars missing or init failed)
 3. **Healthcheck failure**: `app.listen()` not called before DB init
 4. **"Cannot read properties of undefined"**: Missing DB data (new Turso DB needs club import)
-5. **Health works but API 404**: Wrong service URL — the production URL includes a service suffix
+5. **Health works but API 404**: Wrong service URL — confirm you're hitting the right host (`onrender.com` or Railway fallback)
 6. **Build OK + image pushed but "1/1 replicas never became healthy"**: runtime crash — pull `deploymentLogs(deploymentId, limit)` (buildLogs works too; `{ message }` list, no edges). Typical cause: a dependency requiring a newer Node than Nixpacks' default Node 18 (pdf-parse v2 needs `process.getBuiltinModule`, Node >=20.16 — crash shows `Node.js v18.20.5` footer). Fix: `package.json` `"engines": { "node": "22.x" }` — **never remove it**, the doc-import stack depends on it.
 
 ## API Routes
@@ -321,7 +321,7 @@ If `initDatabase()` blocks or runs before `app.listen()`, Railway healthcheck fa
 - LINE Developers 主控台（非程式碼）gotchas：① Channel → Messaging API 頁籤需將「使用 Webhook」設為 ON，Webhook URL 指向 `https://.../line/webhook`；② 官方帳號「自動回應訊息」若未停用，用戶會同時收到 LINE 預設回覆與 bot 回覆（設定位置：manager.line.biz → 設定 → 回應訊息）；③ 「自動退出群組」開關若開啟，bot 被邀請進群會立刻自動退出（曾踩坑：bot 反覆進群即退，直到主控台關閉該設定）。
 - Gemini 模型注意：模型名稱由 `GEMINI_MODEL` 控制（預設 `gemini-3.5-flash-lite`），改動後重啟生效。曾因 API key 對 `gemini-2.0-flash` 免費額度為 0（429 limit:0）導致 bot 回退「AI 助理尚未設定」，改用 `gemini-2.5-flash` 後正常；若未來再遇 429，可先用 `generateContent` 實測各模型額度，再調整 `GEMINI_MODEL`。
 - 免費 key 可用範圍：**一般問答與彙整（無搜尋）免費 key 即可**（`gemini-3.5-flash-lite` 輸入/輸出免費）；**網路搜尋（Grounding with Google Search）官方明載 Free tier 不支援，必須付費 key**。付費後 Gemini 3 系每月 5,000 次搜尋免費、超過 $14/1000 次；付費另享較高 rate limit（免費 tier 有 RPM/RPD 上限，群組訊息量大時可能卡額度）。
-- E2E 驗證撇步（不需真實用戶）：用 `LINE_CHANNEL_SECRET` 對測試 body 算 HMAC-SHA256 簽章 POST 到 `/line/webhook`（PowerShell `HMACSHA256` + Base64）→ 200 代表部署實例的 secret 正確；帶 `source.groupId` 的訊息事件會寫入 `line_group_id`，可再用 Railway variables 拿到的 Turso creds 對正式庫 SELECT 確認。
+- E2E 驗證撇步（不需真實用戶）：用 `LINE_CHANNEL_SECRET` 對測試 body 算 HMAC-SHA256 簽章 POST 到 `/line/webhook`（PowerShell `HMACSHA256` + Base64）→ 200 代表部署實例的 secret 正確；帶 `source.groupId` 的訊息事件會寫入 `line_group_id`，可再用 Render env-vars（或舊 Railway variables）拿到的 Turso creds 對正式庫 SELECT 確認。
 
 ## File Structure
 ```
