@@ -7,7 +7,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const XLSX = require('xlsx');
-const { initDatabase, getAll, getOne, runQuery, insert, importClubs, saveDatabase, getDb, ensureAdminPermsColumn } = require('./database');
+const { initDatabase, getAll, getOne, runQuery, insert, importClubs, saveDatabase, getDb, ensureAdminPermsColumn, backfillPaymentFileData } = require('./database');
 const { generateToken, authMiddleware, anyAdminMiddleware, adminMiddleware, requirePerm, getAdminPerms, ADMIN_PERMS } = require('./auth');
 const { taipeiToday, phaseState, getSettings, occupancy, promoteStandby, forfeitUnpaidByPhase, runEnforcement, enforceDeadlines } = require('./deadlines');
 const { verifySignature, handleLineEvent, pushToGroup, pushToUser, pushToLineUser, refreshSourceNames, syncGroupMembers, summarizeMessages, generateAnnouncement, recordWebhookDiag } = require('./linebot');
@@ -76,17 +76,8 @@ const uploadLimiter = rateLimit({
   message: { error: '上傳過於頻繁，請稍後再試' }
 });
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const dir = path.join(__dirname, 'uploads', 'payments');
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    cb(null, dir);
-  },
-  filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname);
-    cb(null, `payment_${req.user.clubId}_${Date.now()}${ext}`);
-  }
-});
+// 繳費證明上傳：memory storage（檔案本體存入 Turso DB `payment_proofs.file_data`，不依賴 ephemeral 磁碟）
+const storage = multer.memoryStorage();
 
 const upload = multer({
   storage,
@@ -446,25 +437,26 @@ function startServer() {
       if (!req.file) return res.status(400).json({ error: '請選擇檔案' });
 
       // 內容型別驗證（不信任客戶端 mimetype）：比對檔頭魔數
-      const buf = fs.readFileSync(req.file.path).subarray(0, 8);
+      const buf = req.file.buffer.subarray(0, 8);
       const magicOk = (buf.length >= 3 && buf[0] === 0xFF && buf[1] === 0xD8 && buf[2] === 0xFF)
         || (buf.length >= 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47 && buf[4] === 0x0D && buf[5] === 0x0A && buf[6] === 0x1A && buf[7] === 0x0A)
         || (buf.length >= 4 && buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x38)
         || (buf.length >= 4 && buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46);
       if (!magicOk) {
-        fs.unlinkSync(req.file.path);
         return res.status(400).json({ error: '檔案內容與格式不符（僅支援 JPG/PNG/GIF/PDF）' });
       }
 
       const { registration_id } = req.body;
       const fileType = req.file.mimetype === 'application/pdf' ? 'pdf' : 'image';
+      const ext = path.extname(req.file.originalname || '');
+      const filePath = `/uploads/payments/payment_${req.user.clubId}_${Date.now()}${ext}`;
 
       const id = await insert(
-        "INSERT INTO payment_proofs (registration_id, club_id, file_path, file_type, file_name) VALUES (?, ?, ?, ?, ?)",
-        [registration_id || null, req.user.clubId, `/uploads/payments/${req.file.filename}`, fileType, req.file.originalname]
+        "INSERT INTO payment_proofs (registration_id, club_id, file_path, file_type, file_name, file_data) VALUES (?, ?, ?, ?, ?, ?)",
+        [registration_id || null, req.user.clubId, filePath, fileType, req.file.originalname, req.file.buffer]
       );
 
-      res.json({ id, message: '上傳成功', filePath: `/uploads/payments/${req.file.filename}` });
+      res.json({ id, message: '上傳成功', filePath });
     } catch (err) {
       console.error('Payment upload error:', err.message);
       res.status(500).json({ error: '上傳失敗，請稍後再試' });
@@ -474,7 +466,7 @@ function startServer() {
   app.get('/api/payment/my-uploads', authMiddleware, async (req, res) => {
     try {
       const uploads = await getAll(
-        "SELECT * FROM payment_proofs WHERE club_id = ? ORDER BY uploaded_at DESC",
+        "SELECT id, registration_id, club_id, file_path, file_type, file_name, status, reviewed_by, reviewed_at, uploaded_at FROM payment_proofs WHERE club_id = ? ORDER BY uploaded_at DESC",
         [req.user.clubId]
       );
       res.json(uploads);
@@ -499,7 +491,17 @@ function startServer() {
         return res.status(403).json({ error: '無此功能權限' });
       }
 
-      // 路徑 containment：只允許 uploads/ 下的檔案
+      // 檔案本體優先從 DB（file_data）回傳——存入後不再依賴 ephemeral 磁碟
+      if (proof.file_data && proof.file_data.byteLength) {
+        const fileType = proof.file_type === 'pdf' ? 'application/pdf'
+          : String(proof.file_name || '').toLowerCase().endsWith('.png') ? 'image/png'
+          : String(proof.file_name || '').toLowerCase().endsWith('.gif') ? 'image/gif'
+          : 'image/jpeg';
+        res.setHeader('Content-Type', fileType);
+        return res.send(Buffer.from(proof.file_data));
+      }
+
+      // 路徑 containment：只允許 uploads/ 下的檔案（相容遷移前的歷史紀錄）
       const rawPath = String(proof.file_path || '').replace(/^[\\/]+/, '');
       const resolvedPath = path.resolve(__dirname, rawPath);
       const uploadsRoot = path.resolve(__dirname, 'uploads');
@@ -659,7 +661,7 @@ function startServer() {
   app.get('/api/payment/all', authMiddleware, requirePerm('payments'), async (req, res) => {
     try {
       const proofs = await getAll(`
-        SELECT p.*, c.club_name
+        SELECT p.id, p.registration_id, p.club_id, p.file_path, p.file_type, p.file_name, p.status, p.reviewed_by, p.reviewed_at, p.uploaded_at, c.club_name
         FROM payment_proofs p
         JOIN clubs c ON p.club_id = c.club_id
         ORDER BY p.uploaded_at DESC
@@ -722,6 +724,18 @@ function startServer() {
       res.json({ message: '已重設為待審核' });
     } catch (err) {
       console.error('Payment reset error:', err.message);
+      res.status(500).json({ error: '操作失敗，請稍後再試' });
+    }
+  });
+
+  // 清理繳費證明檔案本體：只清 file_data BLOB，保留 payment_proofs 列與審核狀態（報名截止後檔案無用途，釋放 Turso 儲存）
+  app.post('/api/admin/payment-proofs/cleanup', authMiddleware, requirePerm('payments'), async (req, res) => {
+    try {
+      const rows = await getOne("SELECT COUNT(*) as cnt FROM payment_proofs WHERE file_data IS NOT NULL AND length(file_data) > 0");
+      await runQuery("UPDATE payment_proofs SET file_data = NULL WHERE file_data IS NOT NULL");
+      res.json({ cleared: Number(rows ? rows.cnt : 0), message: '已清除繳費證明檔案內容（審核紀錄保留）' });
+    } catch (err) {
+      console.error('Payment proofs cleanup error:', err.message);
       res.status(500).json({ error: '操作失敗，請稍後再試' });
     }
   });
@@ -966,7 +980,8 @@ function startServer() {
     try {
       const clubs = await getAll("SELECT * FROM clubs");
       const registrations = await getAll("SELECT * FROM registrations");
-      const paymentProofs = await getAll("SELECT * FROM payment_proofs");
+      // 備份純 metadata：不含 file_data BLOB（檔案本體以 Turso DB 為持久層，避免撐爆 restore 10MB body 限制）
+      const paymentProofs = await getAll("SELECT id, registration_id, club_id, file_path, file_type, file_name, status, reviewed_by, reviewed_at, uploaded_at FROM payment_proofs");
       const settings = await getAll("SELECT * FROM settings");
       const feedback = await getAll("SELECT * FROM feedback");
       const lineMessages = await getAll("SELECT * FROM line_messages");
@@ -1644,6 +1659,13 @@ function startServer() {
         await ensureJwtSecret();
         await runEnforcement();
         console.log('Startup enforcement done');
+        // 遷移保護：把尚在磁碟 uploads/ 的舊繳費證明檔讀入 DB（file_data）
+        try {
+          const backfilled = await backfillPaymentFileData();
+          if (backfilled > 0) console.log(`Payment file_data backfill: ${backfilled} 筆已寫入 DB`);
+        } catch (err) {
+          console.error('Payment file_data backfill error:', err.message);
+        }
         // 報名進度自動公告：啟動時先檢查一次「隔 5 日」規則，再啟動每 30 分鐘的週期排程
         sendStatsAnnounce('periodic');
         startPeriodicStatsAnnounce();

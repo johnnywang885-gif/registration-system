@@ -36,7 +36,8 @@ No lint, typecheck, or test scripts exist. This is a plain JS project with no bu
 - `review_h_doc_import.js` — boots real server on PORT 34898, exercises the 文書上傳匯入 stack over HTTP: 上傳 Excel（xlsx lib 生成、多工作表各一筆＋儲存格文字）、TXT、DOCX（docx 包生成 fixture）、手刻最小 PDF → 各建立知識列；不支援格式（.doc）/空白檔 → 200 + failed 細節（訊息含「不支援」「判讀」）；>2500 字自動分段（段落 n/m 標題）；backup 含全部上傳知識列；`retrieveKnowledge()` 撈得到上傳內容（中文檔名 mojibake 還原由此測試守護）。
 - `review_i_security.js` — boots real server on PORT 34914, guards security fixes: settings PUT 白名單（`jwt_secret` 無法覆寫、錯誤日期/名額 400、全白名單外 400）、JWT 簽發→驗證往返（secret 記憶化）、`importClubs()` null guard（只匯入有效筆數）、deadline 空字串下 `runEnforcement()` 不誤動作、繳費上傳 >10MB → 明確 400 訊息、**魔數 sniff 不符 → 400（M2b）**、註冊欄位超長 → 400（M2c）、**xlsx 匯入成功＋非 xlsx 400（M2d）**、**全域審查批1（2026-08）**：公開/管理 API 不洩漏 `jwt_secret`（summary/settings/backup 過濾＋restore 不還原）、`reset-password` 無法重設系統管理員、`importClubs`/POST clubs 無法覆寫管理帳號（club_id 正整數＋ON CONFLICT 守衛）、**restore 預先驗證：含 `jwt_secret`/惡意 `file_path` → 400 拒絕且不動 DB（S1d）、舊版前導斜線 `file_path` 備份正常還原（S1e）**、付款檔案路徑 containment（`../` 穿透 → 403）＋跨社讀取需 `payments` 權限。
 - `review_j_announce_image.js` — boots real server on PORT 34915, exercises the AI 公告圖片判讀 stack over HTTP: 純圖片來源（raw 留空）400 驗證（空資料/6 張/格式不支援/超 2MB）、pwsh System.Drawing 產生含中文社號的 PNG fixture → generate 純圖片（有 `GEMINI_API_KEY` 時斷言 broadcast 含圖內社號＋perClub 社號⊆圖內集合，無 key 時 graceful 500）、文字＋圖片並存。
-- `review_k_stats_announce.js` — boots real server on PORT 34916, guards the 報名進度自動公告 stack: `dayMultiple5()` 單元（5/10/15/20/25/30 為 true、31/其他/壞格式為 false）、`buildStatsMessage()` 內容（各階段人數＋繳費社團數＋名額/剩餘）、無 LINE 設定時 `sendStatsAnnounce` 優雅 false 且不寫 `stats_announce_date`、失敗記錄（`stats_last_error=no_token`、`stats_fail_count` 累計；periodic 非 5 倍數日在嘗試前返回不計失敗）、內容去重（快照相同 change 跳過不累計失敗、manual 繞過去重）、連續失敗 ≥3 自動開【報名公告推播失敗】意見單且同日去重、`stats_announce=off` 停用、當日已公告過則 periodic 去重、settings PUT 白名單接受 `stats_announce`、HTTP 報名異動不中斷、測試推播端點（admin 200+ok:false+detail／一般社團 403／公開 summary 過濾 stats_*）、`runEnforcement()` 回傳 `changed` 旗標（未來截止日 false、逾期棄權 true）。
+- `review_k_stats_announce.js` — boots real server on PORT 34916, guards the 報名進度自動公告 stack: `dayMultiple5()` 單元（5/10/15/20/25/30 為 true、31/其他/壞格式為 false）、`buildStatsMessage()` 內容（各階段人數＋繳費社團數＋名額/剩餘）、無 LINE 設定時 `sendStatsAnnounce` 優雅 false 且不寫 `stats_announce_date`、失敗記錄（`stats_last_error=no_token`、`stats_fail_count` 累計；periodic 非 5 倍數日在嘗試前返回不計失敗）、內容去重（快照相同 change 跳過不累計失敗、manual 繞過去重）、連續失敗 ≥3 自動開【報名公告推播失敗】意見單且同日去重、`stats_announce=off` 停用、當日已公告過則 periodic 去重、settings PUT 白名單接受 `stats_announce`、HTTP 報名異動不中斷、測試推播端點（admin 200+ok:false+detail／一般社團 403／公開 summary 過濾 stats_*）、`runEnforcement()` 回傳 `changed` 旗標（未來截止日 false、逾期棄權 true）。**注意：若在 5/10/15/20/25/30 日執行且 `stats_fail_count` 比預期多 1，是伺服器啟動時 `sendStatsAnnounce('periodic')` 在測試 seed 前先記了一次失敗（日期相依、非本次改動引致）。**
+- `review_l_payment_blob.js` — boots real server on PORT 34917, guards the 繳費證明檔案本體入庫 stack: PNG/PDF 上傳後 `payment_proofs.file_data` 有 BLOB、磁碟無實檔仍 `GET /api/payment/file/:id` 200（正確 content-type）、魔數不符 400、`my-uploads`/`payment/all`/backup 皆不含 `file_data`、審核 approve 後 `POST /api/admin/payment-proofs/cleanup` 只清 blob 保留列與狀態、cleanup 後 `file/:id` 404、非管理員 403。
 - `sim_phase2_144_30.js` — boots real server on PORT 34893; scenario simulation (Phase 1: 144 paid + paid-club standby; Phase 2: 30 incl. those standby) printing per-club tables. Reuse as a template for "what if" simulations.
 - `sim_185_30.js` — boots real server on PORT 34904; scenario simulation (185 Phase-1 registrations incl. 5 big clubs over the 10-seat guarantee → 50 unpaid forfeits → 30 Phase-2 registrations) and keeps the DB alive for browser verification. Reuse as template too.
 - `sim_frontend_boot.js` — boots real server on PORT 34900, seeds clubs 2401/2402, then stays alive (`setInterval`) for manual/browser frontend testing. **Use this instead of `npm start` when you need a running server for MCP browser work.**
@@ -66,7 +67,7 @@ If `initDatabase()` blocks or runs before `app.listen()`, the hosting provider's
 - All routes inside `startServer()` function (not top-level)
 - Routes use async handlers; unhandled errors caught by global error handler
 - Static files served via `express.static('public')`
-- File uploads via multer to `uploads/payments/`
+- File uploads via multer **memory storage** — 繳費證明檔案本體存入 DB（`payment_proofs.file_data` BLOB），檔案內容不落 ephemeral 磁碟（見「Payment Files Are Auth-Protected」）
 
 ### Database (`database.js`)
 - Uses `@libsql/client` connecting to `TURSO_DATABASE_URL` (Turso cloud in production; also accepts `file:` for offline testing — see Verification)
@@ -76,6 +77,7 @@ If `initDatabase()` blocks or runs before `app.listen()`, the hosting provider's
 - `saveDatabase()` is a no-op (kept for backward compat)
 - Tables: `clubs`, `registrations`, `payment_proofs`, `settings`, `feedback`, `line_messages`, `line_sources`, `knowledge`
 - `clubs` — 社團帳號（`is_admin=1` 系統管理員；`admin_perms` 非空＝次管理者，JSON 權限陣列）
+- `payment_proofs.file_data` — 繳費證明檔案本體 BLOB（2026-08-30 遷移加入；NULL＝無檔案內容）。上傳一律存入此欄，`file_path` 僅留虛擬路徑供相容；`GET /api/payment/file/:id` 以 DB blob 優先、磁碟 fallback（遷移前的歷史紀錄）。backup JSON **不含** `file_data`（Turso DB 即持久層）。
 - `line_messages` — LINE 對話紀錄（`source_type` group/user、`source_id` groupId|userId、`sender_id`、`message`、`created_at`，UTC datetime）；bot 收到每則文字訊息即 INSERT
 - `line_sources` — LINE 來源清單（PK `(source_type, source_id)`），每個 LINE 事件即時 `ON CONFLICT ... DO UPDATE` 更新 `last_message_at`（upsert 不可用 `INSERT OR REPLACE`，會清掉名稱欄位）；`source_name`/`member_count` 由管理員在後台按「重新整理名稱」補抓（群組→`GET /v2/bot/group/{id}/summary`、用戶→`GET /v2/bot/profile/{id}`），失敗保留原值
 - 兩表皆納入 backup/restore JSON（`line_messages`/`line_sources` 節）
@@ -189,8 +191,8 @@ If `initDatabase()` blocks or runs before `app.listen()`, the hosting provider's
 - Healthcheck: `GET /health` must return 200 within 30s
 - **Render service ID: `srv-da9a3opf2nfc73erdav0`**（截圖上的 ID 少字，以 API 回傳為準）；Render API key 由使用者於 dashboard Account Settings→API Keys 建立（`rnd_` 開頭）；env 變數修正用 `PUT /v1/services/{id}/env-vars/{key}` body `{"value":"..."}`（collection endpoint 405，單 key 端點才對）
 - Current production URL: `https://registration-system-bxgr.onrender.com`（`/health` and `/api/summary` are public for quick checks）
-- **Render Free 代價**：閒置 15 分鐘休眠、冷啟動 ~1 分鐘；由 repo `.github/workflows/keepalive.yml`（GitHub Actions 每 10 分鐘 ping `/health`，public repo 免費）保持清醒，每月耗 ~720-744 小時 ⇒ 750 小時限額內；`uploads/` 不持久（重啟/休眠即清空，與 Railway 相同）
-- **uploads/ is NOT persistent on Railway**: every deploy/restart wipes uploaded payment-proof files (DB rows keep the `file_path`, but `GET /api/payment/file/:id` then 404s). Backup JSON does NOT include file contents. Accepted as-is — tell admins clubs can re-upload.
+- **Render Free 代價**：閒置 15 分鐘休眠、冷啟動 ~1 分鐘；由 repo `.github/workflows/keepalive.yml`（GitHub Actions 每 10 分鐘 ping `/health`，public repo 免費）保持清醒，每月耗 ~720-744 小時 ⇒ 750 小時限額內；`uploads/` ephemeral 磁碟重啟/休眠即清空（與 Railway 相同）——**檔案本體已存 DB（`payment_proofs.file_data`），重啟不受影響**
+- **繳費證明檔案持久性（2026-08-30 起）**：上傳檔案本體存入 Turso DB，不再依賴 ephemeral `uploads/`。遷移保護：`initDatabase()` 加 `file_data` 欄位，啟動時 `backfillPaymentFileData()` 把仍殘留磁碟的舊檔案讀回 DB；`GET /api/payment/file/:id` 以 DB blob 優先、磁碟 fallback（僅相容遷移前的歷史紀錄）。backup JSON 仍 **不含檔案內容**（`file_data` 排除），避免撐爆 restore 10MB body 限制——Turso DB 即持久層。
 - **Detect whether a deploy actually switched versions**: `POST /api/login` with a ~180KB body → new code (10mb `express.json`) parses fine and returns a JSON 4xx (e.g. `400` 「請輸入帳號和密碼」 without credentials), old code (100kb limit) returns HTML 500. Useful because rolling deploys may never drop `/health`.
 - The `railway` CLI is installed but **not linked/logged in** in this environment (`railway whoami` / `railway variables` print nothing). Use the GraphQL API with an account token instead (see below) — do not assume `railway` commands work.
 - If deploy fails with "Healthcheck failure" or "Application failed to respond":
@@ -242,9 +244,10 @@ If `initDatabase()` blocks or runs before `app.listen()`, the hosting provider's
 - `POST /api/admin/announce/match` — 依社號/社名比對 `line_sources.source_name`（群組類型排序在前），回每社 `candidates`（含 source_type/source_id/source_name）；比對不到回空陣列
 - `POST /api/admin/announce/send` — 發送 AI 公告（admin）：`mode:'group'`＋`text` → 推播 `line_group_id`（未設定 501）；`mode:'clubs'`＋`items:[{club_id, club_name, message, target_id}]` → 逐筆 `pushToLineUser`，**逐筆回報** `delivered`/`failed`（有失敗不中斷其餘，整批仍回 200）
 - `POST /line/webhook` — LINE Messaging API webhook (no auth; rate-limited 600 req/min 防灌水；validates `X-Line-Signature` HMAC-SHA256 with `LINE_CHANNEL_SECRET`; empty-event requests pass WITHOUT signature so LINE console URL verification works; acks 200 then processes events async **with concurrency cap 5**（`processLineEvent` 佇列）)
-- `GET /api/payment/file/:id` — view payment proof file (auth required: owning club, or admin with `payments` 權限；路徑限 `uploads/` 內，`../` 穿透 → 403)
+- `GET /api/payment/file/:id` — view payment proof file (auth required: owning club, or admin with `payments` 權限；DB `file_data` BLOB 優先回傳，無 blob 才磁碟 fallback（`../` 穿透仍 → 403））
 - `GET /api/payment/my-uploads` (club) / `GET /api/payment/all` (admin) — list payment proofs
-- `POST /api/payment/upload` — 繳費證明上傳（auth; rate-limited 10/min；**魔數 sniff**：JPG/PNG/GIF/PDF 檔頭不符 → 400 且刪檔）
+- `POST /api/payment/upload` — 繳費證明上傳（auth; rate-limited 10/min；**memory storage、內容直接存 DB blob**；**魔數 sniff**：JPG/PNG/GIF/PDF 檔頭不符 → 400 且刪檔）
+- `POST /api/admin/payment-proofs/cleanup` — 清除所有繳費證明檔案本體（admin only, `payments` 權限）：`file_data` 全設 NULL、保留列與審核狀態，回 `{ cleared, message }`。報名截止且完成審核後執行以釋放 Turso 儲存；後台按鈕在 繳費審核 tab，含 confirm 與 toast
 - `POST /api/admin/import-clubs` — bulk import clubs (admin only)
 - `POST /api/admin/import-excel` — import from XLSX (admin only; **獨立 memory multer**，只收 .xlsx/.xls 副檔名，不落盤）
 - `GET /api/admin/backup` — full backup as JSON (admin only; `settings` 節不含 `jwt_secret`，restore 也不會還原它)
@@ -267,7 +270,8 @@ If `initDatabase()` blocks or runs before `app.listen()`, the hosting provider's
 ### Payment Files Are Auth-Protected
 - `/uploads` is NOT served statically. Files are accessed via `GET /api/payment/file/:id` with a JWT (admin or owning club)
 - Frontend loads images/PDFs via `fetch` + blob URL (a plain `<img src>` / `<a href>` cannot send the Authorization header)
-- Rejecting a proof keeps the file on disk so it can still be reviewed; the club can upload a new proof which creates a new row
+- Rejecting a proof keeps the file in DB so it can still be reviewed; the club can upload a new proof which creates a new row
+- **檔案本體存於 DB**（`payment_proofs.file_data`）：重啟/休眠/部署不會遺失。磁碟 `uploads/payments/` 只是歷史遺留（啟動時 `backfillPaymentFileData()` 會把舊檔案讀回 DB,之後一律 DB 優先）；`ext` 由 `file_name` 副檔名判斷 content-type
 
 ### Admin Downloads Are Auth-Protected Too
 - `GET /api/admin/export` and `GET /api/admin/backup` require the JWT header — a `window.open(url)` / plain `<a href>` navigation cannot send it and returns `{"error":"未登入"}` (401)
@@ -337,7 +341,7 @@ public/          — Frontend HTML files
 public/css/      — Shared styles (style.css + guide.css)
 public/js/       — Guide tour engine (guide.js) + toast utility (toast.js)
 public/images/   — Logo assets (culroc-logo.jpg)
-uploads/         — Payment proof files (gitignored)
+uploads/         — Payment proof files (gitignored; 歷史遺留，檔案本體已改存 DB `file_data`)
 data/            — gitignored local SQLite scratch DB (`data/registration.db`, from manual `file:` runs)
 test/            — regression + simulation scripts (see Verification; *.db gitignored)
 test/launch-chrome.ps1 — one-command Chrome + remote-debugging launcher for MCP browser testing

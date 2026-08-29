@@ -70,6 +70,10 @@
 
       <!-- 繳費審核 -->
       <div class="tab-content" id="tab-payments">
+        <div class="btn-group mb-20">
+          <button class="btn btn-sm btn-warning" onclick="cleanupPaymentProofs()">清理已截止繳費證明檔案本體</button>
+          <span id="cleanupProofMsg" style="margin-left:12px; font-size:13px; color:#4a3728;"></span>
+        </div>
         <div class="loading hidden" id="loadingPay">
           <div class="spinner"></div>
         </div>
@@ -152,7 +156,7 @@
         <hr style="margin: 30px 0; border: 1px solid #e0e0e0;">
 
         <h3 style="margin-bottom: 16px;">資料備份與還原</h3>
-        <p style="font-size: 13px; color: #666; margin-bottom: 16px;"> 平台重啟/重新部署會清除已上傳檔案，建議操作後立即備份。還原會覆蓋現有資料。</p>
+        <p style="font-size: 13px; color: #666; margin-bottom: 16px;">繳費證明檔案本體已存於資料庫，重啟/部署不會遺失。備份 JSON 僅含資料不含檔案內容；還原會覆蓋現有資料。</p>
         <div class="btn-group">
           <button class="btn btn-success" onclick="backupData()">全量備份 (JSON)</button>
           <label class="btn btn-primary" style="cursor: pointer;">
@@ -704,6 +708,27 @@
         loadRegistrations();
       } catch (err) {
         toast('重設失敗，請稍後再試', 'error');
+      }
+    }
+
+    async function cleanupPaymentProofs() {
+      if (!confirm('確定清除所有繳費證明的檔案本體嗎？\n\n清除後僅保留審核紀錄（列與狀態），檔案內容無法復原。\n建議於報名截止且完成審核後再執行，以釋放儲存空間。')) return;
+      const msgEl = document.getElementById('cleanupProofMsg');
+      msgEl.textContent = '清除中...';
+      try {
+        const res = await fetch('/api/admin/payment-proofs/cleanup', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (res.status === 401) { localStorage.clear(); window.location.href = '/'; return; }
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { msgEl.textContent = data.error || '清除失敗，請稍後再試'; toast(data.error || '清除失敗，請稍後再試', 'error'); return; }
+        msgEl.textContent = data.message || '清除完成';
+        toast(data.message || '清除完成', 'success');
+        loadPayments();
+      } catch (err) {
+        msgEl.textContent = '清除失敗，請稍後再試';
+        toast('清除失敗，請稍後再試', 'error');
       }
     }
 

@@ -1,5 +1,7 @@
 const { createClient } = require('@libsql/client');
 const bcrypt = require('bcryptjs');
+const fs = require('fs');
+const path = require('path');
 
 let db = null;
 
@@ -95,6 +97,9 @@ async function initDatabase() {
   // Migration: add source_file column (知識來源上傳檔名；NULL = 手動新增)
   await ensureKnowledgeSourceFileColumn();
 
+  // Migration: add file_data column (繳費證明檔案本體，存入 DB 後不受部署/休眠影響)
+  await ensurePaymentFileDataColumn();
+
   // Create default admin if not exists
   const adminCheck = await db.execute("SELECT COUNT(*) as cnt FROM clubs WHERE is_admin = 1");
   const adminCount = adminCheck.rows[0]?.cnt || 0;
@@ -179,6 +184,39 @@ async function ensureKnowledgeSourceFileColumn() {
   }
 }
 
+// 冪等確認 payment_proofs.file_data 欄位存在（繳費證明檔案本體 BLOB；NULL = 無檔案內容）
+async function ensurePaymentFileDataColumn() {
+  if (!db) throw new Error('Database not connected');
+  try {
+    await db.execute("ALTER TABLE payment_proofs ADD COLUMN file_data BLOB");
+    console.log('Migration: payment_proofs.file_data 欄位已新增');
+  } catch (err) {
+    if (!/duplicate column/i.test(String(err && err.message))) throw err;
+  }
+}
+
+// 啟動回填：把仍存在於磁碟 uploads/payments/ 的舊繳費證明檔讀入 file_data（遷移保護）
+async function backfillPaymentFileData() {
+  if (!db) throw new Error('Database not connected');
+  const rows = await db.execute("SELECT id, file_path FROM payment_proofs WHERE file_data IS NULL");
+  const stmts = [];
+  const uploadsRoot = path.resolve(__dirname, 'uploads');
+  for (const row of rows.rows) {
+    const rawPath = String(row.file_path || '').replace(/^[\\/]+/, '');
+    const resolved = path.resolve(__dirname, rawPath);
+    if (!resolved.startsWith(uploadsRoot + path.sep)) continue;
+    try {
+      if (fs.existsSync(resolved)) {
+        stmts.push({ sql: "UPDATE payment_proofs SET file_data = ? WHERE id = ?", args: [fs.readFileSync(resolved), row.id] });
+      }
+    } catch (err) {
+      console.error('Backfill payment file_data error:', err.message);
+    }
+  }
+  if (stmts.length) await db.batch(stmts, 'write');
+  return stmts.length;
+}
+
 async function importClubs(clubsData) {
   if (!Array.isArray(clubsData) || clubsData.length === 0) return 0;
   const valid = clubsData.filter(c => c && c.club_id != null && c.club_name != null && String(c.club_name).trim() !== ''
@@ -212,5 +250,6 @@ module.exports = {
   insert,
   importClubs,
   ensureAdminPermsColumn,
-  ensureKnowledgeSourceFileColumn
+  ensureKnowledgeSourceFileColumn,
+  backfillPaymentFileData
 };
