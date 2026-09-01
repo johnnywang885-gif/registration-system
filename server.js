@@ -960,6 +960,18 @@ function startServer() {
     }
   });
 
+  // 免額度：取得當前報名進度文字（供手動複製貼上到 LINE，不計 push）
+  app.get('/api/admin/stats-message', authMiddleware, requirePerm('settings'), async (req, res) => {
+    try {
+      const { buildStatsMessage } = require('./stats_announce');
+      const text = await buildStatsMessage();
+      res.json({ message: text });
+    } catch (err) {
+      console.error('Stats message error:', err.message);
+      res.status(500).json({ error: '載入失敗' });
+    }
+  });
+
   app.put('/api/admin/settings', authMiddleware, requirePerm('settings'), async (req, res) => {
     try {
       const settings = req.body || {};

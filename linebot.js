@@ -855,6 +855,25 @@ async function handleLineEvent(event) {
     return;
   }
 
+  // 免額度查詢：主群組輸入「統計 / 報名進度 / 目前報名」以 reply（不計 push）回當前進度，9 月額度耗盡時仍可用
+  const STATS_QUERY_KEYWORDS = ['報名進度', '目前報名', '查統計', '統計'];
+  if (STATS_QUERY_KEYWORDS.some(k => lower.includes(k.toLowerCase()))) {
+    // 僅主群組回覆，避免私訊被誤觸大量查詢；非主群組仍可透過一般問答取得
+    try {
+      const groupRow = await getOne("SELECT value FROM settings WHERE key = 'line_group_id'");
+      const mainGroupId = groupRow && groupRow.value;
+      const isMainGroup = event.source && event.source.type === 'group' && String(event.source.groupId) === String(mainGroupId);
+      if (isMainGroup || event.source.type === 'user') {
+        const { buildStatsMessage } = require('./stats_announce');
+        const msg = await buildStatsMessage();
+        await replyMessage(event.replyToken, msg);
+        return;
+      }
+    } catch (e) {
+      console.error('stats query reply error:', e.message);
+    }
+  }
+
   if (FEEDBACK_KEYWORDS.some(k => lower.includes(k))) {
     const id = await saveFeedback(null, 'LINE 群組', guessCategory(text), text);
     await replyMessage(event.replyToken, `已收到您的意見（編號 #${id}），已記錄並轉交開發團隊處理，感謝您的回饋！`);
