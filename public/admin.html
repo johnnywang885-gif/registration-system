@@ -550,12 +550,13 @@
             <table>
               <thead>
                 <tr>
-                  <th>社號</th><th>社名</th><th>職稱</th><th>姓名</th><th>身分證</th><th>生日</th><th>手機</th><th>素/葷</th><th>階段</th><th>狀態</th><th>操作</th>
+                  <th>序號</th><th>社號</th><th>社名</th><th>職稱</th><th>姓名</th><th>身分證</th><th>生日</th><th>手機</th><th>素/葷</th><th>階段</th><th>狀態</th><th>操作</th>
                 </tr>
               </thead>
               <tbody>
-                ${data.map(r => `
+                ${data.map((r, i) => `
                   <tr>
+                    <td>${i + 1}</td>
                     <td>${r.club_id}</td>
                     <td>${esc(r.club_name)}</td>
                     <td>${esc(r.position || '-')}</td>
@@ -577,6 +578,7 @@
                 `).join('')}
               </tbody>
             </table>
+            <div style="text-align:right; margin-top:8px; font-size:13px; color:#4a3728;">共 <b>${data.length}</b> 筆（序號 1～${data.length}）</div>
           `;
         }
       } catch (err) {

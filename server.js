@@ -1203,7 +1203,8 @@ function startServer() {
       sql += " ORDER BY r.club_id, r.created_at";
 
       const data = await getAll(sql, params);
-    const exportData = data.map(r => ({
+    const exportData = data.map((r, i) => ({
+      '序號': i + 1,
       '社號': r.club_id,
       '社名': r.club_name,
       '職稱': r.position,
