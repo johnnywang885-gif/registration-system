@@ -165,6 +165,9 @@
 
     <div class="card reg-form-card">
       <h2 class="mb-20" style="font-size:18px; color:#4a3728;">報名表單</h2>
+      <div id="supervisorHint" class="hidden" style="background:#fff8e7; border:1px solid #e0c89a; border-radius:8px; padding:12px 14px; margin-bottom:16px; font-size:13px; color:#4a3728; line-height:1.6;">
+        🛡️ 您以 <strong>系統管理員／次管理者</strong> 身分登入，此處新增的報名資料為 <strong>督導／幹事 保障名額</strong>（佔 160 內、不轉候補、免繳費、繳費截止不棄權）。請選職稱「督導」或「幹事」後填寫姓名送出。
+      </div>
       <div id="alertBox" class="hidden"></div>
       <div class="reg-form-card form-section-title">基本資料</div>
       <form id="regForm">
@@ -177,6 +180,8 @@
               <option value="監事">監事</option>
               <option value="聘任幹部">聘任幹部</option>
               <option value="眷屬">眷屬</option>
+              <option value="督導">督導</option>
+              <option value="幹事">幹事</option>
             </select>
           </div>
           <div class="form-group">
@@ -231,6 +236,22 @@
   <script>
     const token = localStorage.getItem('token');
     if (!token) window.location.href = '/';
+
+    // 管理員友善：在導覽列補上「管理後台」入口；並顯示保障名額提示
+    try {
+      const _isAdmin = localStorage.getItem('isAdmin') === 'true';
+      if (_isAdmin) {
+        const nav = document.querySelector('.nav');
+        if (nav && !nav.querySelector('a[href="/admin"]')) {
+          const a = document.createElement('a');
+          a.href = '/admin';
+          a.textContent = '管理後台';
+          nav.appendChild(a);
+        }
+        const hint = document.getElementById('supervisorHint');
+        if (hint) hint.classList.remove('hidden');
+      }
+    } catch (e) {}
 
     let editingId = null;
     let regList = [];

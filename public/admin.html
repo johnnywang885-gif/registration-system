@@ -15,6 +15,7 @@
 
     <div class="nav">
       <a href="/" id="navLogout" onclick="localStorage.clear()">登出</a>
+      <a href="/register" id="navGuaranteed" style="background:#4a3728; color:#fff; border-radius:999px; padding:4px 12px;">保障名額報名</a>
       <a href="/summary">目前報名統計</a>
       <a href="/feedback">意見回饋</a>
       <a href="/intro.html">報名系統簡介</a>
@@ -35,6 +36,9 @@
 
       <!-- 報名管理 -->
       <div class="tab-content active" id="tab-registrations">
+        <div style="background:#fff8e7; border:1px solid #e0c89a; border-radius:8px; padding:10px 14px; margin-bottom:14px; font-size:13px; color:#4a3728; line-height:1.6;">
+          🛡️ 含督導及幹事 2位保障名額：請以 <strong>本管理員帳號</strong> 至 <a href="/register">保障名額報名 (/register)</a> 或下方「系統設定」內快速表單建立（職稱選「督導／幹事」），該 2 席佔 160 內、不轉候補、免繳費、繳費截止不棄權（見 <code>server.js:346 deadlines.js:60</code>）。
+        </div>
         <div class="filter-bar">
           <div class="form-group">
             <label>篩選社別</label>
@@ -129,6 +133,57 @@
               <label>第一階段總名額</label>
               <input type="number" id="settingPhase1Quota" min="1">
               <div style="font-size: 12px; color: #8a6a3b; margin-top: 6px;">含督導及幹事 2位 保障名額（以系統管理員及次管理者帳號登入後建立報名資料，佔 160 內、不轉候補、免繳費）</div>
+              <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+                <a href="/register" class="btn btn-sm btn-primary" style="text-decoration:none;">➕ 前往建立保障名額（/register）</a>
+                <button type="button" class="btn btn-sm btn-secondary" onclick="toggleGuaranteedForm()">在本站直接新增</button>
+                <span style="font-size:12px; color:#8a6a3b;">以本帳號 POST /api/registrations，職稱選「督導／幹事」即為保障席</span>
+              </div>
+              <div id="guaranteedFormWrap" class="hidden" style="margin-top:12px; background:#fff8e7; border:1px solid #e8ddd2; border-radius:8px; padding:14px;">
+                <div style="font-size:13px; color:#4a3728; font-weight:600; margin-bottom:10px;">督導／幹事 保障名額快速新增（免跳頁）</div>
+                <div class="form-row">
+                  <div class="form-group">
+                    <label>職稱 *</label>
+                    <select id="gPosition">
+                      <option value="督導">督導</option>
+                      <option value="幹事">幹事</option>
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label>姓名 *</label>
+                    <input type="text" id="gName" placeholder="必填">
+                  </div>
+                </div>
+                <div class="form-row">
+                  <div class="form-group">
+                    <label>身分證</label>
+                    <input type="text" id="gIdCard" placeholder="身分證字號">
+                  </div>
+                  <div class="form-group">
+                    <label>生日</label>
+                    <input type="text" id="gBirthday" placeholder="民國年/月/日（如 113/08/15）">
+                  </div>
+                </div>
+                <div class="form-row">
+                  <div class="form-group">
+                    <label>手機</label>
+                    <input type="tel" id="gPhone" placeholder="手機號碼">
+                  </div>
+                  <div class="form-group">
+                    <label>素/葷</label>
+                    <select id="gMealType">
+                      <option value="">請選擇</option>
+                      <option value="葷">葷食</option>
+                      <option value="素">素食</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="btn-group">
+                  <button type="button" class="btn btn-primary btn-sm" onclick="submitGuaranteed()">新增保障名額</button>
+                  <button type="button" class="btn btn-secondary btn-sm" onclick="toggleGuaranteedForm()">收合</button>
+                  <span id="gMsg" style="margin-left:12px; font-size:13px; color:#4a3728;"></span>
+                </div>
+                <div id="gList" style="margin-top:12px; font-size:13px; color:#4a3728;"></div>
+              </div>
             </div>
             <div class="form-group">
               <label>目前階段（依日期自動推算）</label>
@@ -2224,6 +2279,88 @@
         if (data.push) loadSettings();
       } catch (err) { toast('傳送失敗: ' + err.message, 'error'); }
       finally { announceBusy.delete('sendClubs'); }
+    }
+
+    // === 督導/幹事保障名額快速新增（佔 160 內、不轉候補、免繳費） ===
+    function toggleGuaranteedForm() {
+      const wrap = document.getElementById('guaranteedFormWrap');
+      if (!wrap) return;
+      const willShow = wrap.classList.contains('hidden');
+      wrap.classList.toggle('hidden');
+      if (willShow) loadGuaranteedList();
+    }
+    function gRocToWestern(rocStr) {
+      if (!rocStr) return '';
+      const cleaned = rocStr.replace(/\//g, '-');
+      const parts = cleaned.split('-');
+      if (parts.length !== 3) return '';
+      const year = parseInt(parts[0], 10) + 1911;
+      if (isNaN(year)) return '';
+      return `${year}-${parts[1].padStart(2, '0')}-${parts[2].padStart(2, '0')}`;
+    }
+    function gValidateROCDate(rocStr) {
+      if (!rocStr) return true;
+      const parts = rocStr.split('/');
+      if (parts.length !== 3) return false;
+      const y = parseInt(parts[0], 10), m = parseInt(parts[1], 10), d = parseInt(parts[2], 10);
+      if (isNaN(y) || isNaN(m) || isNaN(d)) return false;
+      if (y < 1 || y > 200 || m < 1 || m > 12 || d < 1 || d > 31) return false;
+      return true;
+    }
+    async function loadGuaranteedList() {
+      const el = document.getElementById('gList');
+      if (!el) return;
+      try {
+        const res = await fetch('/api/my-registrations', { headers: { 'Authorization': `Bearer ${token}` } });
+        if (!res.ok) { el.textContent = '載入失敗'; return; }
+        const data = await res.json();
+        const regs = data.registrations || [];
+        if (regs.length === 0) {
+          el.innerHTML = '<span style="color:#999;">本帳號目前尚無報名資料（保障名額需以本管理員帳號建立）</span>';
+        } else {
+          el.innerHTML = `本帳號已建立 ${regs.length} 筆（${regs.map(r => esc(r.position||'-') + ' ' + esc(r.name) + ' <small>(' + (r.status==='paid'?'已繳費':r.status==='standby'?'候補':'已報名') + ')</small>').join('、')}）`;
+        }
+      } catch (e) {
+        el.textContent = '載入失敗';
+      }
+    }
+    async function submitGuaranteed() {
+      const name = document.getElementById('gName').value.trim();
+      const position = document.getElementById('gPosition').value;
+      if (!name) { toast('請輸入姓名', 'error'); return; }
+      const birthdayInput = document.getElementById('gBirthday').value.trim();
+      if (birthdayInput && !gValidateROCDate(birthdayInput)) { toast('生日格式不正確，請用 民國年/月/日（如 113/08/15）', 'error'); return; }
+      const body = {
+        position,
+        name,
+        id_card: document.getElementById('gIdCard').value.trim(),
+        birthday: gRocToWestern(birthdayInput),
+        phone: document.getElementById('gPhone').value.trim(),
+        meal_type: document.getElementById('gMealType').value
+      };
+      const msgEl = document.getElementById('gMsg');
+      msgEl.textContent = '送出中...';
+      try {
+        const res = await fetch('/api/registrations', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify(body)
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { msgEl.textContent = data.error || '新增失敗'; toast(data.error || '新增失敗', 'error'); return; }
+        msgEl.textContent = data.message || '報名成功（保障名額）';
+        toast(data.message || '報名成功（保障名額）', 'success');
+        document.getElementById('gName').value = '';
+        document.getElementById('gIdCard').value = '';
+        document.getElementById('gBirthday').value = '';
+        document.getElementById('gPhone').value = '';
+        loadGuaranteedList();
+        loadRegistrations();
+        loadSettings();
+      } catch (err) {
+        msgEl.textContent = '新增失敗';
+        toast('新增失敗: ' + err.message, 'error');
+      }
     }
 
     // Init
