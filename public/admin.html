@@ -141,8 +141,9 @@
                 <input type="checkbox" id="settingStatsAnnounce" style="margin-right: 6px; vertical-align: middle;">
                 報名人數異動時自動公告報名進度到 LINE 群組
               </label>
-              <div style="font-size: 12px; color: #999; margin-top: 6px;">異動（新增/刪除/繳費/棄權/遞補）後約 15 秒自動推播一次目前報名人數與繳費情形；每月 5、10、15、20、25、30 號亦會各公告一次（當日已公告過則不重複）。取消勾選即完全停用。</div>
+              <div style="font-size: 12px; color: #999; margin-top: 6px;">異動（新增/刪除/繳費/棄權/遞補）後約 60 分鐘自動推播一次目前報名人數與繳費情形（多筆異動合併為一封）；每月 5、10、15、20、25、30 號亦會各公告一次（當日已公告過則不重複）。每月推播達 180/200 則後自動統計將完全跳過以保留額度給手動公告。取消勾選即完全停用。</div>
               <div id="statsAnnounceStatus" style="font-size: 13px; margin-top: 8px;">尚未公告過</div>
+              <div id="pushBudgetStatus" style="font-size: 13px; margin-top: 8px; color:#4a3728;"></div>
               <button type="button" class="btn btn-sm btn-warning mt-10" onclick="testStatsAnnounce()">測試推播（強制發送一次）</button>
             </div>
           </div>
@@ -1121,7 +1122,7 @@
       }
     }
 
-    // 報名進度自動公告狀態（上次成功／失敗原因，由 settings 的 stats_* 鍵帶入）
+    // 報名進度自動公告狀態（上次成功／失敗原因，由 settings 的 stats_* 鍵帶入）+ 月推播預算
     function renderStatsAnnounceStatus(d) {
       const el = document.getElementById('statsAnnounceStatus');
       if (!el) return;
@@ -1136,6 +1137,15 @@
         el.innerHTML = `<span style="color:#5a8c5a;">✓ 上次成功公告：${fmt(d.stats_last_ok_at)}</span>`;
       } else {
         el.textContent = '尚未公告過';
+      }
+      const pushEl = document.getElementById('pushBudgetStatus');
+      if (pushEl) {
+        const used = typeof d.push_used === 'number' ? d.push_used : (parseInt(d.push_used,10)||0);
+        const max = typeof d.push_max === 'number' ? d.push_max : (parseInt(d.push_max,10)||200);
+        const warn = typeof d.push_warn === 'number' ? d.push_warn : (parseInt(d.push_warn,10)||180);
+        const remaining = typeof d.push_remaining === 'number' ? d.push_remaining : Math.max(0, max - used);
+        const warnPart = used >= warn ? `<span style="color:#b85c4f;">（已達 ${warn}/${max}，自動統計將完全跳過）</span>` : (used >= max - 30 ? `<span style="color:#b85c4f;">（剩餘 ${remaining} 則，請節省手動推播）</span>` : '');
+        pushEl.innerHTML = `本月群組推播：已用 <b>${used}</b> / ${max} 則，剩餘 <b>${remaining}</b> 則 ${warnPart}`;
       }
     }
 
@@ -2102,6 +2112,15 @@
       if (announceBusy.has('sendGroup')) return;
       const text = document.getElementById('annBroadcast').value.trim();
       if (!text) { toast('公告內容為空', 'error'); return; }
+      try {
+        const sRes = await fetch('/api/admin/settings', { headers: { 'Authorization': `Bearer ${token}` } });
+        if (sRes.ok) {
+          const s = await sRes.json();
+          const used = typeof s.push_used === 'number' ? s.push_used : (parseInt(s.push_used,10)||0);
+          const max = typeof s.push_max === 'number' ? s.push_max : 200;
+          if (used >= max) { toast(`本月額度已滿（${used}/${max}），無法發送`, 'error'); return; }
+        }
+      } catch (e) {}
       announceBusy.add('sendGroup');
       try {
         const res = await fetch('/api/admin/announce/send', {
@@ -2111,6 +2130,7 @@
         });
         const data = await res.json();
         toast(data.message || data.error, res.ok ? 'success' : 'error');
+        if (data.push) loadSettings();
       } catch (err) { toast('傳送失敗: ' + err.message, 'error'); }
       finally { announceBusy.delete('sendGroup'); }
     }
@@ -2144,7 +2164,29 @@
       if (announceBusy.has('sendClubs')) return;
       const items = collectAnnounceItems();
       if (items.length === 0) { toast('沒有已指定傳送對象的社團', 'error'); return; }
-      if (!confirm('確認傳送給 ' + items.length + ' 社？')) return;
+      // 顯示本月剩餘額度與本次消耗，超閾需二次確認（各社逐筆各計 1 則）
+      try {
+        const sRes = await fetch('/api/admin/settings', { headers: { 'Authorization': `Bearer ${token}` } });
+        if (sRes.ok) {
+          const s = await sRes.json();
+          const used = typeof s.push_used === 'number' ? s.push_used : (parseInt(s.push_used,10)||0);
+          const max = typeof s.push_max === 'number' ? s.push_max : 200;
+          const remaining = typeof s.push_remaining === 'number' ? s.push_remaining : Math.max(0, max - used);
+          const need = items.length;
+          if (used >= max) { toast(`本月額度已滿（${used}/${max}），無法發送 ${need} 則`, 'error'); return; }
+          if (need > remaining) {
+            if (!confirm(`本次需 ${need} 則，但本月剩餘僅 ${remaining} 則（已用 ${used}/${max}），將有 ${need - remaining} 社因額度耗盡而失敗。仍要繼續嗎？`)) return;
+          } else if (remaining - need <= 20) {
+            if (!confirm(`本次需 ${need} 則，發送後剩餘僅 ${remaining - need} 則（本月 ${used + need}/${max}）。剩餘額度將保留給其他手動公告，自動統計達 180 則後會完全跳過。確定發送給 ${need} 社？`)) return;
+          } else {
+            if (!confirm(`確認傳送給 ${need} 社？（本次 ${need} 則，本月已用 ${used}/${max}，剩餘 ${remaining} 則）`)) return;
+          }
+        } else {
+          if (!confirm('確認傳送給 ' + items.length + ' 社？')) return;
+        }
+      } catch (e) {
+        if (!confirm('確認傳送給 ' + items.length + ' 社？')) return;
+      }
       announceBusy.add('sendClubs');
       try {
         const res = await fetch('/api/admin/announce/send', {
@@ -2155,7 +2197,8 @@
         const data = await res.json();
         if (!res.ok) { toast(data.error || '傳送失敗', 'error'); return; }
         data.delivered.forEach(d => toast('✓ ' + d.club_name + ' 已傳送', 'success'));
-        if (data.failed.length) toast('失敗 ' + data.failed.map(f => f.club_name).join('、'), 'error');
+        if (data.failed.length) toast('失敗 ' + data.failed.map(f => f.club_name + '(' + (f.reason || '未知') + ')').join('、'), 'error');
+        if (data.push) loadSettings();
       } catch (err) { toast('傳送失敗: ' + err.message, 'error'); }
       finally { announceBusy.delete('sendClubs'); }
     }

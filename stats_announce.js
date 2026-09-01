@@ -7,8 +7,8 @@ const { getOne, runQuery, insert } = require('./database');
 const { getSettings, taipeiToday } = require('./deadlines');
 const { pushToGroupDetail } = require('./linebot');
 
-// 異動後合併發送的緩衝時間（多次異動只發一封）
-const CHANGE_DEBOUNCE_MS = 15000;
+// 異動後合併發送的緩衝時間（多次異動只發一封；延長至 60min 以節省 LINE 每月 push 額度）
+const CHANGE_DEBOUNCE_MS = 60 * 60 * 1000;
 // 週期檢查頻率（30 分鐘檢查一次當日是否為 5 的倍數日期）
 const PERIODIC_INTERVAL_MS = 30 * 60 * 1000;
 // 連續推送失敗達此次數時，自動開一張意見回饋單提醒管理員（每天最多一張）
@@ -112,9 +112,21 @@ async function openFailTicketIfNeeded() {
 
 // 發送公告。periodic 只在「當日為 5 的倍數日期」且「當日尚未公告過」時送出；
 // change（異動觸發）不受此限制但受內容去重限制；manual（後台測試推播）強制發送、繞過所有限制。
+// 自動統計（change/periodic）達月預算 WARN（預設 180/200）後完全跳過，手動測試不受 WARN 限制。
 async function sendStatsAnnounce(reason = 'change') {
   try {
     if (!(await isEnabled())) return false;
+    // 自動統計月預算護欄：達 WARN 後完全跳過，不計失敗
+    if (reason !== 'manual') {
+      try {
+        const { getPushUsage } = require('./linebot');
+        const { used, warn, max } = await getPushUsage();
+        if (used >= warn) {
+          console.log(`[stats_announce] skipped by push budget guard (${used}/${max}, warn=${warn}, reason=${reason})`);
+          return false;
+        }
+      } catch (e) {}
+    }
     const today = taipeiToday();
     if (reason === 'periodic') {
       if (!dayMultiple5(today)) return false;

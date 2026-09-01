@@ -16,6 +16,17 @@ const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
 const GEMINI_API = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 const SYSTEM_URL = process.env.SYSTEM_URL || 'https://registration-system-bxgr.onrender.com';
 
+// 每月推播預算（LINE 免費帳號 200 則/月，達 WARN 閾值後自動統計完全跳過）
+const PUSH_MAX_MONTH = (() => {
+  const v = parseInt(process.env.PUSH_MONTHLY_LIMIT, 10);
+  return Number.isFinite(v) && v > 0 ? v : 200;
+})();
+const PUSH_WARN_MONTH = (() => {
+  const v = parseInt(process.env.PUSH_MONTHLY_WARN, 10);
+  if (Number.isFinite(v) && v > 0) return Math.min(v, PUSH_MAX_MONTH);
+  return Math.max(0, PUSH_MAX_MONTH - 20);
+})();
+
 const FEEDBACK_KEYWORDS = ['意見', '建議', '回報', '改進', '壞掉', 'bug', '臭蟲'];
 
 // 統一 fetch：逾時自動中止，避免無 timeout 的呼叫卡死
@@ -99,10 +110,51 @@ async function pushToUser(userId, text) {
   return pushToLineUser(userId, text);
 }
 
+// ===== 每月推播預算（主群組 1 則或各社逐筆皆計 1 則；成功才累計） =====
+function pushMonthKey() {
+  return 'push_' + taipeiToday().slice(0, 7);
+}
+
+async function getPushUsage() {
+  const key = pushMonthKey();
+  const row = await getOne("SELECT value FROM settings WHERE key = ?", [key]);
+  const used = parseInt((row && row.value) || '0', 10) || 0;
+  return { key, used, max: PUSH_MAX_MONTH, warn: PUSH_WARN_MONTH, remaining: Math.max(0, PUSH_MAX_MONTH - used) };
+}
+
+async function canPush(n = 1) {
+  try {
+    const { used, max } = await getPushUsage();
+    return used + n <= max;
+  } catch (err) {
+    console.error('canPush error:', err.message);
+    return true;
+  }
+}
+
+async function recordPushUse(n = 1) {
+  try {
+    const { key, used } = await getPushUsage();
+    await runQuery(
+      "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?",
+      [key, String(used + n), String(used + n)]
+    );
+  } catch (err) {
+    console.error('recordPushUse error:', err.message);
+  }
+}
+
 // 詳細結果版推播：回傳 { ok, status, error }，error 為簡短原因（no_token/no_target 或 LINE 錯誤訊息），供報名進度公告診斷
 async function pushToDetail(to, text) {
   if (!CHANNEL_ACCESS_TOKEN) return { ok: false, status: 0, error: 'no_token' };
   if (!to) return { ok: false, status: 0, error: 'no_target' };
+  // 月預算硬上限：超過 PUSH_MAX 即拒絕發送（所有推播皆經此，含群組與各社逐筆）
+  if (!(await canPush(1))) {
+    const { used, max } = await getPushUsage();
+    const msg = `push budget exceeded (${used}/${max})`;
+    console.error('LINE push blocked by budget:', msg);
+    return { ok: false, status: 429, error: msg };
+  }
   try {
     const res = await lineRequest('/message/push', { to, messages: [{ type: 'text', text }] });
     if (!res.ok) {
@@ -113,8 +165,20 @@ async function pushToDetail(to, text) {
         const j = JSON.parse(body);
         if (j && j.message) error = j.message;
       } catch (e) {}
+      // LINE 額度耗盡時同步本地計數至 MAX，使自動統計立即完全跳過
+      if (error && /reached your monthly limit/i.test(error)) {
+        try {
+          const { key } = await getPushUsage();
+          await runQuery(
+            "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?",
+            [key, String(PUSH_MAX_MONTH), String(PUSH_MAX_MONTH)]
+          );
+          console.log(`[push_budget] synced ${key} to MAX ${PUSH_MAX_MONTH} due to LINE monthly limit`);
+        } catch (e) {}
+      }
       return { ok: false, status: res.status, error };
     }
+    await recordPushUse(1);
     return { ok: true, status: res.status, error: null };
   } catch (err) {
     console.error('LINE push error:', err.message);
@@ -804,4 +868,4 @@ async function handleLineEvent(event) {
   await replyMessage(event.replyToken, answer.text || '抱歉，因忙線中暫時無法回答。您的問題我已記錄，稍後回覆您，請見諒！');
 }
 
-module.exports = { verifySignature, handleLineEvent, pushToGroup, pushToGroupDetail, pushToUser, pushToLineUser, refreshSourceNames, syncGroupMembers, summarizeMessages, generateAnnouncement, getGroundingUsage, canUseGrounding, recordGroundingUse, recordWebhookDiag, answerQuestion, retrieveKnowledge };
+module.exports = { verifySignature, handleLineEvent, pushToGroup, pushToGroupDetail, pushToUser, pushToLineUser, refreshSourceNames, syncGroupMembers, summarizeMessages, generateAnnouncement, getGroundingUsage, canUseGrounding, recordGroundingUse, recordWebhookDiag, answerQuestion, retrieveKnowledge, getPushUsage, canPush, recordPushUse, PUSH_MAX_MONTH, PUSH_WARN_MONTH, pushMonthKey };

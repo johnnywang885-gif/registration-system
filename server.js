@@ -43,7 +43,7 @@ function sanitizeSettings(settings, options = {}) {
   const out = {};
   for (const [key, value] of Object.entries(settings)) {
     if (key === 'jwt_secret') continue;
-    if (publicOnly && (key.startsWith('grounding_') || key.startsWith('webhook_') || key.startsWith('stats_'))) continue;
+    if (publicOnly && (key.startsWith('grounding_') || key.startsWith('webhook_') || key.startsWith('stats_') || key.startsWith('push_'))) continue;
     out[key] = value;
   }
   return out;
@@ -938,12 +938,21 @@ function startServer() {
       const today = taipeiToday();
       const quota = parseInt(settings.phase1_total_quota || '160');
       const current = await occupancy(getDb());
+      let pushUsage = { used: 0, max: 200, warn: 180, remaining: 200 };
+      try {
+        const { getPushUsage } = require('./linebot');
+        pushUsage = await getPushUsage();
+      } catch (e) {}
       res.json({
         ...sanitizeSettings(settings),
         derived_phase: phaseState(settings, today),
         today,
         occupancy: current,
-        remaining: Math.max(0, quota - current)
+        remaining: Math.max(0, quota - current),
+        push_used: pushUsage.used,
+        push_max: pushUsage.max,
+        push_warn: pushUsage.warn,
+        push_remaining: pushUsage.remaining
       });
     } catch (err) {
       console.error('Settings load error:', err.message);
@@ -1288,25 +1297,46 @@ function startServer() {
     try {
       const message = req.body && req.body.message ? String(req.body.message).trim() : '';
       if (!message) return res.status(400).json({ error: '請輸入公告內容' });
+      try {
+        const { getPushUsage } = require('./linebot');
+        const { used, max } = await getPushUsage();
+        if (used >= max) return res.status(429).json({ error: `本月群組推播額度已滿（${used}/${max}），請待次月 1 日重置後再推播` });
+      } catch (e) {}
       const ok = await pushToGroup(message);
       if (!ok) return res.status(501).json({ error: 'LINE 尚未設定（缺少環境變數或 bot 尚未加入群組）' });
-      res.json({ message: '已推播到 LINE 群組' });
+      // 回傳剩餘額度供前端顯示
+      let pushInfo = null;
+      try { const { getPushUsage: g } = require('./linebot'); const u = await g(); pushInfo = { used: u.used, max: u.max, remaining: u.remaining }; } catch (e) {}
+      res.json({ message: '已推播到 LINE 群組', push: pushInfo });
     } catch (err) {
       console.error('Line announce error:', err.message);
       res.status(500).json({ error: '推播失敗，請稍後再試' });
     }
   });
 
-  // 報名進度公告測試推播（強制立即發送一次、繞過內容去重；回傳詳細結果供後台診斷）
+  // 報名進度公告測試推播（強制立即發送一次、繞過內容去重與 WARN 但受月上限 MAX 限制；回傳詳細結果供後台診斷）
   app.post('/api/admin/stats-announce/test', authMiddleware, requirePerm('settings'), async (req, res) => {
     try {
+      try {
+        const { getPushUsage } = require('./linebot');
+        const { used, max } = await getPushUsage();
+        if (used >= max) {
+          const lastOk = await getOne("SELECT value FROM settings WHERE key = 'stats_last_ok_at'");
+          return res.json({ ok: false, detail: `本月群組推播額度已滿（${used}/${max}），請待次月 1 日重置後再推播`, last_ok_at: (lastOk && lastOk.value) || null, push_used: used, push_max: max });
+        }
+      } catch (e) {}
       const ok = await sendStatsAnnounce('manual');
       const errRow = ok ? null : await getOne("SELECT value FROM settings WHERE key = 'stats_last_error'");
       const lastOk = await getOne("SELECT value FROM settings WHERE key = 'stats_last_ok_at'");
+      let pushInfo = null;
+      try { const { getPushUsage: g } = require('./linebot'); const u = await g(); pushInfo = { used: u.used, max: u.max, remaining: u.remaining }; } catch (e) {}
       res.json({
         ok,
         detail: ok ? null : ((errRow && errRow.value) || '未知原因'),
-        last_ok_at: (lastOk && lastOk.value) || null
+        last_ok_at: (lastOk && lastOk.value) || null,
+        push_used: pushInfo ? pushInfo.used : undefined,
+        push_max: pushInfo ? pushInfo.max : undefined,
+        push_remaining: pushInfo ? pushInfo.remaining : undefined
       });
     } catch (err) {
       console.error('Stats announce test error:', err.message);
@@ -1491,10 +1521,20 @@ function startServer() {
       if (!target_type || !target_id) return res.status(400).json({ error: '請選擇傳送對象' });
       if (!message) return res.status(400).json({ error: '請輸入傳送內容' });
       if (!['group', 'user'].includes(target_type)) return res.status(400).json({ error: '對象類型不正確' });
-
+      try {
+        const { getPushUsage } = require('./linebot');
+        const { used, max } = await getPushUsage();
+        if (used >= max) return res.status(429).json({ error: `本月群組推播額度已滿（${used}/${max}），請待次月 1 日重置後再推播`, push_used: used, push_max: max });
+        if (used >= max - 20) {
+          // 接近額度仍允許發送，但提示剩餘
+          console.log(`[line-send] near budget (${used}/${max}) target=${target_type}:${target_id}`);
+        }
+      } catch (e) {}
       const ok = await pushToLineUser(String(target_id), message);
       if (!ok) return res.status(501).json({ error: '傳送失敗：LINE 尚未設定，或對象非好友（個別社需先加官方帳號為好友）' });
-      res.json({ message: '已傳送' });
+      let pushInfo = null;
+      try { const { getPushUsage: g } = require('./linebot'); const u = await g(); pushInfo = { used: u.used, max: u.max, remaining: u.remaining }; } catch (e) {}
+      res.json({ message: '已傳送', push: pushInfo });
     } catch (err) {
       console.error('Line send error:', err.message);
       res.status(500).json({ error: '傳送失敗，請稍後再試' });
@@ -1612,12 +1652,30 @@ function startServer() {
       if (mode === 'group') {
         const message = text ? String(text).trim() : '';
         if (!message) return res.status(400).json({ error: '請輸入公告內容' });
+        try {
+          const { getPushUsage } = require('./linebot');
+          const { used, max } = await getPushUsage();
+          if (used >= max) return res.status(429).json({ error: `本月群組推播額度已滿（${used}/${max}），請待次月 1 日重置後再推播`, push_used: used, push_max: max });
+        } catch (e) {}
         const ok = await pushToGroup(message);
         if (!ok) return res.status(501).json({ error: '傳送失敗：LINE 尚未設定，或 bot 尚未加入主群組' });
-        return res.json({ message: '已推播到 LINE 主群組' });
+        let pushInfo = null;
+        try { const { getPushUsage: g } = require('./linebot'); const u = await g(); pushInfo = { used: u.used, max: u.max, remaining: u.remaining }; } catch (e) {}
+        return res.json({ message: '已推播到 LINE 主群組', push: pushInfo });
       }
       if (mode === 'clubs') {
         if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ error: '沒有要傳送的內容' });
+        // 手動各社推播：預檢額度，剩餘不足時回 429 並告知需/剩餘（由前端二次確認後再發）
+        try {
+          const { getPushUsage } = require('./linebot');
+          const { used, max, remaining } = await getPushUsage();
+          const need = items.length;
+          if (used >= max) return res.status(429).json({ error: `本月群組推播額度已滿（${used}/${max}），無法發送 ${need} 則`, push_used: used, push_max: max, push_remaining: remaining, need });
+          if (need > remaining) {
+            // 不硬擋，改為讓前端二次確認後仍可逐筆嘗試（逐筆會在 pushToDetail 觸發硬上限），此處僅回警告資訊
+            console.log(`[announce:clubs] need ${need} > remaining ${remaining} (${used}/${max})`);
+          }
+        } catch (e) {}
         const delivered = [];
         const failed = [];
         for (const item of items) {
@@ -1629,9 +1687,20 @@ function startServer() {
           }
           const ok = await pushToLineUser(targetId, message);
           if (ok) delivered.push({ club_id: item.club_id || '', club_name: item.club_name || '' });
-          else failed.push({ club_id: item.club_id || '', club_name: item.club_name || '', reason: 'LINE 未設定或對象非好友/無效' });
+          else {
+            // 區分額度耗盡與其他失敗
+            let reason = 'LINE 未設定或對象非好友/無效';
+            try {
+              const { getPushUsage: g } = require('./linebot');
+              const u = await g();
+              if (u.used >= u.max) reason = `本月額度已滿（${u.used}/${u.max}）`;
+            } catch (e) {}
+            failed.push({ club_id: item.club_id || '', club_name: item.club_name || '', reason });
+          }
         }
-        return res.json({ message: `已傳送 ${delivered.length} 社，失敗 ${failed.length} 社`, delivered, failed });
+        let pushInfo = null;
+        try { const { getPushUsage: g } = require('./linebot'); const u = await g(); pushInfo = { used: u.used, max: u.max, remaining: u.remaining }; } catch (e) {}
+        return res.json({ message: `已傳送 ${delivered.length} 社，失敗 ${failed.length} 社`, delivered, failed, push: pushInfo });
       }
       res.status(400).json({ error: '模式不正確' });
     } catch (err) {
