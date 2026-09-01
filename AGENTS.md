@@ -1,358 +1,85 @@
 # AGENTS.md
 
-## Project Overview
-區會報名系統 (Registration System) — Node.js/Express app with Turso cloud database (libSQL), JWT auth, deployed on **Render**（2026-08-29 由 Railway 遷入，Railway 專案留作滾回備用）.
+## Project
+區會報名系統 — Node.js/Express + Turso libSQL + JWT，部署 **Render**（2026-08-29 自 Railway 遷入，Railway 保留滾回）。無 build，無 lint/test 腳本。
 
 ## Quick Start
 ```bash
 npm install
-npm start          # requires TURSO_DATABASE_URL env var
-npm run dev         # development with file watching (node --watch)
+npm start          # 需 TURSO_DATABASE_URL，否則 /api 全 500
+npm run dev        # node --watch
 ```
-No lint, typecheck, or test scripts exist. This is a plain JS project with no build step.
+`dotenv` 載 `.env`（gitignored, 本地 TURSO 為空，正式憑證在 Render）。`README.md` 過時，以此檔為準（`JWT_SECRET` 已改自動生成存 `settings.jwt_secret`）。
 
-`dotenv` auto-loads `.env` (gitignored). The local `.env` has **empty** `TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN` — real Turso credentials live in the hosting service's env vars (now Render). `npm start` locally boots fine but every `/api` call returns 500 until a real Turso URL/token is supplied.
+## Verification
+- 語法：`node --check server.js deadlines.js database.js auth.js linebot.js knowledge_import.js stats_announce.js`
+- Node **≥20.16**（`pdf-parse` 需 `process.getBuiltinModule`），`package.json` 鎖 `22.x` 勿刪
+- 本地離線：`TURSO_DATABASE_URL=file:C:/abs/path.db` + `TURSO_AUTH_TOKEN=` 可跑全栈（`initDatabase()` + `runEnforcement()` 或直接起 `server.js`）
+- 擬真：用正式 `admin` 密碼 `GET /api/admin/backup` → 灌進本地 `file:` 庫 → 改 `settings` 截止日測 `deadlines.js`（勿對正式庫執行 `runEnforcement`/restore）
+- Windows：`file:` 庫被 `server.js` 佔用時先殺進程再刪檔；中文亂碼先 `[Console]::OutputEncoding=[System.Text.Encoding]::UTF8`
+- `test/check_gemini_key.js` 測 `GEMINI_API_KEY` 是否通 + `GEMINI_GROUNDING=on` 是否可用（付費 key 才有 Grounding）
 
-**`README.md` is stale** — trust this file over it (README predates LINE bot/Gemini/knowledge tables, and its "JWT_SECRET 未設定會使登入失效" claim is wrong: `JWT_SECRET` is now auto-generated and persisted in Turso `settings`).
+### Regression (`test/`, 逐一跑、不同 port、`*.db` gitignored)
+- `review_a_flap.js` — 無 HTTP，驗自動遞補不回跳（`[stats_announce] CLIENT_CLOSED` 屬 15s->60min timer 正常殘影）
+- `review_b_export.js` (34891) — `standby → 候補` 映射
+- `review_c_backup.js` — 還原真實 backup 到本地 `file:`（不碰正式庫）
+- `review_d_rule_timeline.js` (34892) — 7 階段時間線
+- `review_e_line_digest.js` (34895) / `review_f_announce.js` (34897, 含 `grounding_YYYY-MM` 4800) / `review_g_knowledge.js` (34899) / `review_h_doc_import.js` (34898) / `review_j_announce_image.js` (34915) / `review_l_payment_blob.js` (34917)
+- `review_i_security.js` (34914) — settings 白名單、JWT、魔數 sniff、xlsx、S1-S6、`jwt_secret` 過濾、路徑 containment 等；`review_k_stats_announce.js` (34916) — `dayMultiple5`/`buildStatsMessage`/去重/`stats_announce` 開關/`push_YYYY-MM` 預算/`runEnforcement changed` 標記
+- `sim_*` 為情境模擬模板；`sim_frontend_boot.js` (34900) 取代 `npm start` 供 MCP 瀏覽器測試；`phase2_standby.js`/`simulate.js` 已廢棄
 
-## Verification (no test framework)
-- Syntax check: `node --check server.js deadlines.js database.js auth.js linebot.js knowledge_import.js stats_announce.js`
-- Local Node must be **≥20.16** (pdf-parse v2 requires `process.getBuiltinModule`); `package.json` `"engines"` pins the host to Node 22 — don't remove it.
-- `@libsql/client` accepts `file:` URLs, so the whole stack (database.js + deadlines.js + server.js) runs against a local SQLite file: set `TURSO_DATABASE_URL=file:C:/abs/path.db`, `TURSO_AUTH_TOKEN=`, then call `initDatabase()` + `runEnforcement()` directly or boot `server.js`.
-- Real-data offline test (never touches production): login as admin (use the real production password — see Auth section; the default `admin123` works only on fresh local DBs) → `GET /api/admin/backup` returns full JSON (`clubs`, `registrations`, `payment_proofs`, `settings`, `feedback`, `line_messages`, `line_sources`, `knowledge`) → seed it into a local `file:` copy → run `deadlines.js` enforcement against the copy. Do NOT point enforcement at the real Turso DB.
-- `deadlines.js` `taipeiToday()` always uses the real Taipei date — to simulate other phases, edit the `settings` rows (deadline dates) in the local copy, not the clock.
-- Windows gotcha: a process holding a `file:` DB (e.g. a spawned `server.js`) locks the file; kill the process before deleting/reopening it.
-- Windows console mangles Chinese unless UTF-8: in PowerShell run `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8` before `node`.
-- `test/check_gemini_key.js` — 驗證任一把 Gemini key 的可用性（$env:GEMINI_API_KEY + 可選 $env:GEMINI_MODEL）：① 一般問答是否通 ② 網路搜尋（Grounding with Google Search）是否可用（可用＝付費 key，可開 `GEMINI_GROUNDING=on`）；key 無效時 exit 1。遇 429 卡額度時也用它逐模型實測。
-
-### Working regression scripts (`test/`)
-- `review_a_flap.js` — standalone DB test (no HTTP): seeds paid/unpaid clubs with Phase 1 standby, runs `runEnforcement()` 5×; asserts no promote↔forfeit flapping (paid-club standby promoted, unpaid-club standby stays). 結尾可能出現 `[stats_announce] error: CLIENT_CLOSED`——那是 15 秒 debounce 計時器在測試關閉 DB 後才觸發的正常痕跡，不影響結果。
-- `review_b_export.js` — boots real server on PORT 34891, seeds the 4 statuses, `GET /api/admin/export`, asserts `standby → 候補` in the 報名資料 sheet (guards the export status mapping).
-- `review_c_backup.js` — restores a real backup JSON into a local `file:` copy and runs `runEnforcement()` as a no-op sanity check (p2 already passed); never touches the live Turso DB.
-- `review_d_rule_timeline.js` — boots real server on PORT 34892, drives a full 7-stage timeline over HTTP (phase-1 overflow → promote → pay → forfeit → phase-2 standby / manual promote).
-- `review_e_line_digest.js` — boots real server on PORT 34895, seeds `line_sources`/`line_messages`, then exercises the LINE 彙整 stack over HTTP: sources list w/ message counts, empty-range 400, digest (200+digest with a real `GEMINI_API_KEY`, else graceful 500), line-send 501 without LINE config, source-name refresh (0 updated without token).
-- `review_f_announce.js` — boots real server on PORT 34897, seeds `line_sources` (主群/各社群/個別社), then exercises the AI 公告 stack over HTTP: generate 400 without raw, generate (200+broadcast+perClub with a real `GEMINI_API_KEY`, else graceful 500), match 社號/社名 → line_sources (群組優先排序；無比對回空), send clubs per-item failures don't break the batch (200 + delivered/failed), send group 501 without LINE config. Also covers the grounding usage counter (`GEMINI_GROUNDING=on` + max 4800): used=4800 → 停用, used=4700 → 啟用, `recordGroundingUse()` → 4701.
-- `review_g_knowledge.js` — boots real server on PORT 34899, exercises the AI 知識庫 stack over HTTP + direct calls: knowledge CRUD (add/update/toggle/delete), `retrieveKnowledge()` 檢索計分（啟用中才撈得到、相關度排序、無關查詢回空）、三層問答流程（無 `GEMINI_API_KEY` 時確定性走 busy 分支：tier=busy + 分身署名 `bot_name` + 自動開 feedback 單「【AI 未解答】」）、backup 含 `knowledge` 節。
-- `review_h_doc_import.js` — boots real server on PORT 34898, exercises the 文書上傳匯入 stack over HTTP: 上傳 Excel（xlsx lib 生成、多工作表各一筆＋儲存格文字）、TXT、DOCX（docx 包生成 fixture）、手刻最小 PDF → 各建立知識列；不支援格式（.doc）/空白檔 → 200 + failed 細節（訊息含「不支援」「判讀」）；>2500 字自動分段（段落 n/m 標題）；backup 含全部上傳知識列；`retrieveKnowledge()` 撈得到上傳內容（中文檔名 mojibake 還原由此測試守護）。
-- `review_i_security.js` — boots real server on PORT 34914, guards security fixes: settings PUT 白名單（`jwt_secret` 無法覆寫、錯誤日期/名額 400、全白名單外 400）、JWT 簽發→驗證往返（secret 記憶化）、`importClubs()` null guard（只匯入有效筆數）、deadline 空字串下 `runEnforcement()` 不誤動作、繳費上傳 >10MB → 明確 400 訊息、**魔數 sniff 不符 → 400（M2b）**、註冊欄位超長 → 400（M2c）、**xlsx 匯入成功＋非 xlsx 400（M2d）**、**全域審查批1（2026-08）**：公開/管理 API 不洩漏 `jwt_secret`（summary/settings/backup 過濾＋restore 不還原）、`reset-password` 無法重設系統管理員、`importClubs`/POST clubs 無法覆寫管理帳號（club_id 正整數＋ON CONFLICT 守衛）、**restore 預先驗證：含 `jwt_secret`/惡意 `file_path` → 400 拒絕且不動 DB（S1d）、舊版前導斜線 `file_path` 備份正常還原（S1e）**、付款檔案路徑 containment（`../` 穿透 → 403）＋跨社讀取需 `payments` 權限。
-- `review_j_announce_image.js` — boots real server on PORT 34915, exercises the AI 公告圖片判讀 stack over HTTP: 純圖片來源（raw 留空）400 驗證（空資料/6 張/格式不支援/超 2MB）、pwsh System.Drawing 產生含中文社號的 PNG fixture → generate 純圖片（有 `GEMINI_API_KEY` 時斷言 broadcast 含圖內社號＋perClub 社號⊆圖內集合，無 key 時 graceful 500）、文字＋圖片並存。
-- `review_k_stats_announce.js` — boots real server on PORT 34916, guards the 報名進度自動公告 stack: `dayMultiple5()` 單元（5/10/15/20/25/30 為 true、31/其他/壞格式為 false）、`buildStatsMessage()` 內容（各階段人數＋繳費社團數＋名額/剩餘）、無 LINE 設定時 `sendStatsAnnounce` 優雅 false 且不寫 `stats_announce_date`、失敗記錄（`stats_last_error=no_token`、`stats_fail_count` 累計；periodic 非 5 倍數日在嘗試前返回不計失敗）、內容去重（快照相同 change 跳過不累計失敗、manual 繞過去重）、連續失敗 ≥3 自動開【報名公告推播失敗】意見單且同日去重、`stats_announce=off` 停用、當日已公告過則 periodic 去重、settings PUT 白名單接受 `stats_announce`、HTTP 報名異動不中斷、測試推播端點（admin 200+ok:false+detail／一般社團 403／公開 summary 過濾 stats_*）、`runEnforcement()` 回傳 `changed` 旗標（未來截止日 false、逾期棄權 true）。**注意：若在 5/10/15/20/25/30 日執行且 `stats_fail_count` 比預期多 1，是伺服器啟動時 `sendStatsAnnounce('periodic')` 在測試 seed 前先記了一次失敗（日期相依、非本次改動引致）。**
-- `review_l_payment_blob.js` — boots real server on PORT 34917, guards the 繳費證明檔案本體入庫 stack: PNG/PDF 上傳後 `payment_proofs.file_data` 有 BLOB、磁碟無實檔仍 `GET /api/payment/file/:id` 200（正確 content-type）、魔數不符 400、`my-uploads`/`payment/all`/backup 皆不含 `file_data`、審核 approve 後 `POST /api/admin/payment-proofs/cleanup` 只清 blob 保留列與狀態、cleanup 後 `file/:id` 404、非管理員 403。
-- `sim_phase2_144_30.js` — boots real server on PORT 34893; scenario simulation (Phase 1: 144 paid + paid-club standby; Phase 2: 30 incl. those standby) printing per-club tables. Reuse as a template for "what if" simulations.
-- `sim_185_30.js` — boots real server on PORT 34904; scenario simulation (185 Phase-1 registrations incl. 5 big clubs over the 10-seat guarantee → 50 unpaid forfeits → 30 Phase-2 registrations) and keeps the DB alive for browser verification. Reuse as template too.
-- `sim_frontend_boot.js` — boots real server on PORT 34900, seeds clubs 2401/2402, then stays alive (`setInterval`) for manual/browser frontend testing. **Use this instead of `npm start` when you need a running server for MCP browser work.**
-- Run **one at a time, sequentially** — each boots its own server on a distinct port against a throwaway `file:` DB in `test/*.db` (gitignored). Pass = output ends with `PASS` / `全部階段 PASS`; exception: `review_a_flap.js`/`review_c_backup.js` print no PASS marker — they pass when the process exits 0 (assertions throw on failure).
-- `phase2_standby.js` / `simulate.js` are stale one-off scripts still driven by the ignored `current_phase` setting — ignore them.
-
-### MCP browser testing (chrome-devtools-mcp)
-- `opencode.json` connects via `--browserUrl http://127.0.0.1:9222`; **before using MCP tools in a new session, run `pwsh test/launch-chrome.ps1`** (spawns headless Chrome with a custom profile + waits until port 9222 is ready).
-- `test/.chrome-profile/` is Chrome's profile dir (gitignored); don't delete it while Chrome is running.
-- Driving the UI with `evaluate_script` (set input values + dispatch events + click) is far more reliable than click/fill MCP tools — the guided-tour overlay can also block click targets; close it first via its 「關閉導覽」 button.
-- Temporary throwaway scripts follow `test/_*.js` (e.g. `_verify_jwt_pass.js`) — they are **gitignored** (`test/_*.js`), so they can't be accidentally committed; still delete them right after use.
+### MCP
+`opencode.json` 連 `http://127.0.0.1:9222`，每 session 先 `pwsh test/launch-chrome.ps1`；`evaluate_script` 比 click/fill 穩，導覽遮罩先按「關閉導覽」；`test/_*.js` 與 `test/*.db`、`test/.chrome-profile/` 皆 gitignored
 
 ## Architecture
 
-### Startup Order (critical — do not rearrange)
-`server.js` `startServer()` is **synchronous** (not async). The order matters for the hosting provider's healthcheck:
+### Startup Order（不可調，`server.js:112 startServer()` 同步）
+1. `GET /health` 2. 註冊所有路由 3. 全域 error handler 4. `app.listen()` 5. `initDatabase()` 非阻塞 `.then()`
+- 若 `initDatabase` 在 `listen` 前或阻塞，Render 健康檢查 30s 內失敗 → 502
 
-1. Register healthcheck route (`/health`)
-2. Register ALL other routes (public + API)
-3. Add global error handler middleware
-4. `app.listen()` — server starts accepting requests
-5. `initDatabase()` runs **non-blocking** in background (`.then().catch()`)
+### DB (`database.js`)
+- `@libsql/client`，`db` 為 `null` 直到 `initDatabase`；`getAll/getOne/runQuery/insert` 皆先判 `!db`
+- `batch(write)` 建表與批次寫入；`saveDatabase()` 為 no-op
+- 表：`clubs`(`is_admin`/`admin_perms` JSON)、`registrations`、`payment_proofs`(`file_data` BLOB，`file_path` 僅虛擬路徑)、`settings`、`feedback`、`line_messages`/`line_sources`、`knowledge`(`source_file`)
+- `payment_proofs.file_data` 為主體（重啟不丟失），`backup` 不含 `file_data`；`GET /api/payment/file/:id` 優先 DB blob，fallback 僅為遷移相容且做 `../` containment
 
-If `initDatabase()` blocks or runs before `app.listen()`, the hosting provider's healthcheck fails and the deploy dies with a 502.
+### Phase / Deadlines (`deadlines.js`)
+- Phase 由日期推算（非 `current_phase`）：`today<=phase1_deadline → phase1`；`phase1<today<=payment → phase1_closed`；`payment<today<=phase2 → phase2`；`>phase2 → closed`（`taipeiToday()` 台北 `YYYY-MM-DD`，截止日當天仍計入）
+- 總額 `phase1_total_quota` 預設 160（占位=`registered`+`paid`）；候補/棄權不占位
+- `enforceDeadlines` 掛 `/api` 中介層 + 啟動一次，5s debounce；`runEnforcement()` 回 `{changed}` 才觸發 `scheduleStatsAnnounce()`
+- `POST /api/admin/promote` 與 `promote/:id` 受 160 上限；`standby-list` 含兩階段依 `created_at`
 
-### Server Structure (`server.js`)
-- All routes inside `startServer()` function (not top-level)
-- Routes use async handlers; unhandled errors caught by global error handler
-- Static files served via `express.static('public')`
-- File uploads via multer **memory storage** — 繳費證明檔案本體存入 DB（`payment_proofs.file_data` BLOB），檔案內容不落 ephemeral 磁碟（見「Payment Files Are Auth-Protected」）
+### Stats Announce (`stats_announce.js` + `linebot.js:pushToDetail`)
+- 雙觸發：異動（註冊/刪除/繳費審核/遞補/清空/還原/`runEnforcement`）→ `CHANGE_DEBOUNCE_MS=60min` 合併一封；隔 5 日（5/10/15/20/25/30 `dayMultiple5()`）→ `PERIODIC_INTERVAL 30min` setInterval，即使無流量也會發，當日 `stats_announce_date` 去重
+- 內容：`collectStats()` 各階段人數 + 繳費社數 + 剩餘；`stats_announce=off` 全停（`settings` 白名單可寫）
+- 去重：`change` 時 `stats_last_snapshot` 相同則跳過不計失敗
+- **月預算**：`push_YYYY-MM` 計成功 `push` 數（群組 1 則、各社逐筆各 1），`PUSH_MAX=200`（`PUSH_MONTHLY_LIMIT` 可覆蓋）、`PUSH_WARN=180`（`PUSH_MONTHLY_WARN`），`stats` 自動達 `WARN` **完全跳過**不計失敗；`pushToDetail` 超 `MAX` 硬擋 429，遇 `You have reached your monthly limit` 自動同步本地 `push_YYYY-MM=MAX`；下月 key 自動重置；`test/review_k_stats_announce.js` 守護
 
-### Database (`database.js`)
-- Uses `@libsql/client` connecting to `TURSO_DATABASE_URL` (Turso cloud in production; also accepts `file:` for offline testing — see Verification)
-- `db` is `null` until `initDatabase()` succeeds
-- All DB functions (`getAll`, `getOne`, `runQuery`, `insert`) check `if (!db)` and throw "Database not connected" if called before init completes
-- `db.batch()` for multi-statement operations (table creation, bulk inserts)
-- `saveDatabase()` is a no-op (kept for backward compat)
-- Tables: `clubs`, `registrations`, `payment_proofs`, `settings`, `feedback`, `line_messages`, `line_sources`, `knowledge`
-- `clubs` — 社團帳號（`is_admin=1` 系統管理員；`admin_perms` 非空＝次管理者，JSON 權限陣列）
-- `payment_proofs.file_data` — 繳費證明檔案本體 BLOB（2026-08-30 遷移加入；NULL＝無檔案內容）。上傳一律存入此欄，`file_path` 僅留虛擬路徑供相容；`GET /api/payment/file/:id` 以 DB blob 優先、磁碟 fallback（遷移前的歷史紀錄）。backup JSON **不含** `file_data`（Turso DB 即持久層）。
-- `line_messages` — LINE 對話紀錄（`source_type` group/user、`source_id` groupId|userId、`sender_id`、`message`、`created_at`，UTC datetime）；bot 收到每則文字訊息即 INSERT
-- `line_sources` — LINE 來源清單（PK `(source_type, source_id)`），每個 LINE 事件即時 `ON CONFLICT ... DO UPDATE` 更新 `last_message_at`（upsert 不可用 `INSERT OR REPLACE`，會清掉名稱欄位）；`source_name`/`member_count` 由管理員在後台按「重新整理名稱」補抓（群組→`GET /v2/bot/group/{id}/summary`、用戶→`GET /v2/bot/profile/{id}`），失敗保留原值
-- 兩表皆納入 backup/restore JSON（`line_messages`/`line_sources` 節）
-- `knowledge` — AI 知識庫（`title`/`content`/`active` 啟用開關/時間戳/`source_file` 來源檔名），管理後台「系統設定」tab 貼文、貼上內容或**上傳文書檔案**（.pdf/.docx/.xls/.xlsx/.txt，`knowledge_import.js` 抽取文字，>2500 字自動分段為多筆，Excel 逐工作表一筆，中文檔名自動還原 busboy mojibake）建立，bot 問答第 1 層優先依此回答；上傳建立的列以 `source_file` 記原檔名（手動新增為 NULL），後台知識列表依檔案分組顯示檔名並可整檔刪除（`DELETE` 全部段落/工作表）；納入 backup/restore（`knowledge` 節，含 `source_file`）
+### Auth (`auth.js`)
+- `authMiddleware` / `anyAdminMiddleware` / `adminMiddleware` / `requirePerm(key)`（`ADMIN_PERMS` 與 `admin.html ADMIN_TAB_OPTIONS` 同步：`registrations`/`payments`/`clubs`/`settings`/`standby`/`feedback`/`linedigest`/`announce`）
+- JWT 24h，`is_admin=1` 系統管理員、`admin_perms` 非空為次管理者；舊 token 無 `perms` 視同系統管理員；`clubs.admin_perms` 由 migration 建欄
 
-### Registration Status Flow
-- `registered` → default status when a club member registers (occupies a seat)
-- `standby` → set when club exceeds `guaranteed_quota` in Phase 1, when occupancy >= 160, or Phase 2 overflow (候補，不占名額)
-- `paid` → set when admin approves payment proof
-- `forfeited` → set when admin marks as forfeited (棄權) OR auto-forfeited at deadline (未繳費視同未報名)
-- Status changes: `registered` ↔ `standby` ↔ `paid` ↔ `forfeited`
+### LINE / Gemini (`linebot.js`)
+- `verifySignature` 需 `express.json({verify})` 存 `rawBody`；`handleLineEvent` 寫 `line_messages`/`line_sources`、任意 `groupId` 事件 upsert `line_group_id`；`「公告：」` 僅主群組回草稿不自動推
+- 三層問答：`retrieveKnowledge()` (bigram+4碼) → `googleSearch`（`GEMINI_GROUNDING=on` 且 `grounding_YYYY-MM < 4800`，以 `groundingMetadata.groundingChunks` 判定真搜尋才計數）→ 忙線開 `【AI 未解答】` 單；`GEMINI_MODEL` 預設 `gemini-3.5-flash-lite`
+- `generateAnnouncement` 群組版/各社版（`images` inline_data），`parseClubAnnouncements` 同社去重；`pushToGroup(Line群組公告/announce group/stats)` 需 `line_group_id`，個別 `pushToLineUser` 需對方加好友；`syncGroupMembers` 僅認證帳號可用全量，否則 fallback `line_messages.sender_id`
 
-### Phase System (date-driven, automatic)
-- Total capacity is `settings.phase1_total_quota` (default 160) — the hard cap on the **official confirmed list** (occupancy = `COUNT(status IN ('registered','paid'))`). Standby and forfeited do NOT count.
-- Phase is **derived from dates** (`deadlines.js` `phaseState`), NOT from the manual `current_phase` setting (now ignored):
-  - `today <= phase1_deadline` → `phase1` (Phase 1 open)
-  - `phase1_deadline < today <= payment_deadline` → `phase1_closed` (new Phase 1 registrations rejected)
-  - `payment_deadline < today <= phase2_deadline` → `phase2` (Phase 2 open)
-  - `today > phase2_deadline` → `closed` (registration closed)
-- Dates are compared as `YYYY-MM-DD` strings in `Asia/Taipei`; **deadline day is inclusive**, transitions run the day after (`taipeiToday()`).
-- Phase 1 registration: standby if club exceeds `guaranteed_quota` (10) OR occupancy >= 160.
-- Phase 2 registration: `registered` while occupancy < 160, otherwise `standby` (Phase 2 standby queue for manual admin adjustment).
-- `GET /api/admin/standby-list` lists standby from BOTH phases by `created_at ASC`.
-- Auto-promotion targets **Phase 1** standby only (by login order, filling to quota). Phase 2 standby must be promoted manually (`POST /api/admin/promote/:id`), both are bound by the 160 cap.
+### Frontend
+- 純 HTML/CSS/JS，無框架；`admin.html` 8 個 tab 依權限顯隱；`public/css` earthy 主題，`js/guide.js`/`css/guide.css` 導覽，`js/toast.js` 取代 `alert`
 
-### Deadline Enforcement (`deadlines.js`)
-- `enforceDeadlines` middleware runs on **every `/api` request** (non-blocking, background) + once at startup after DB ready. 5-second debounce prevents redundant runs on rapid requests.
-- Transitions are idempotent (4 windows):
-  1. `today > payment_deadline` → clubs WITHOUT an `approved` payment proof: Phase 1 `registered` → `forfeited` (未繳費視同未報名)
-  2. `phase1_deadline < today <= payment_deadline` → auto-promote **ALL** Phase 1 standby (any club) by login order until occupancy = quota
-  3. `payment_deadline < today <= phase2_deadline` → auto-promote ONLY Phase 1 standby of clubs WITH an `approved` proof (`requirePaidClub`), by login order until occupancy = quota
-  4. `today > phase2_deadline` → clubs without `approved` proof: Phase 2 `registered` → `forfeited` (no further promotion)
-- Unpaid clubs' Phase 1 standby (未繳費社團候補) are NEVER auto-promoted after the payment deadline — they stay `standby` until admin manually promotes them; they are not forfeited either.
-- Payment status is judged **per club** (club has at least one `approved` proof = paid). Proofs still `pending`/`rejected` after the deadline count as unpaid.
-- `POST /api/admin/promote` (manual button) and `POST /api/admin/promote/:id` remain as backup; both respect the 160 cap. `POST /api/admin/promote` promotes Phase 1 standby of ANY club.
-- `GET /api/admin/settings` returns `derived_phase`, `today`, `occupancy`, `remaining` for the admin UI (which shows the phase read-only).
+## Deployment
+- 現役 **Render** `srv-da9a3opf2nfc73erdav0`，`https://registration-system-bxgr.onrender.com`；`POST /api/login` 180KB body 可探版本（新碼 10mb 限，舊碼 100kb 回 HTML 500）
+- Free 層：15 分鐘休眠冷啟動 ~1 分、750h/月，靠 **UptimeRobot 5 分 ping `/health`** 保活（`.github/workflows/keepalive.yml` 的 `schedule` 在本 repo 實測不觸發，僅備援）
+- `TURSO_DATABASE_URL`/`TURSO_AUTH_TOKEN` 必設；`LINE_CHANNEL_SECRET`/`LINE_CHANNEL_ACCESS_TOKEN`/`GEMINI_API_KEY`/`GEMINI_MODEL`/`GEMINI_GROUNDING`/`GEMINI_GROUNDING_MAX_MONTH` 選設；`JWT_SECRET` 未設時自動生成 64-hex 存 `settings.jwt_secret`
 
-### 報名進度自動公告 (`stats_announce.js`)
-- 雙觸發自動把「目前報名人數及繳費情形」推播到 LINE 主群組：① **人數異動**（報名新增/刪除、標記繳費/棄權/重設、繳費審核核准/重設、遞補、清空資料、還原備份，以及 `runEnforcement()` 自動棄權/遞補）→ 15 秒 debounce 合併成一封（`scheduleStatsAnnounce()`）；② **每月隔 5 日**（5/10/15/20/25/30 號，`dayMultiple5()` 判定）→ 每 30 分鐘檢查一次（`startPeriodicStatsAnnounce()`，`setInterval().unref()`，即使完全沒有 API 流量也會發），當日已公告過（`settings.stats_announce_date` = 當日日期）則不重複發。
-- 公告內容：第一階段已報名（待繳費）/已繳費/候補/棄權人數＋已繳費社團家數＋第二階段人數＋總名額/正取/剩餘（`collectStats()` 即時查 DB，`buildStatsMessage()` 格式化）。
-- 開關：`settings.stats_announce`（`on` 預設／`off` 停用），後台 系統設定 tab 勾選框控制；未設定＝啟用。推送失敗不會記錄 `stats_announce_date`；`pushToGroupDetail()` 未設定時回 `{ok:false,error:'no_token'|'no_group'}` 不拋錯。
-- **可觀測性（2026-08-24）**：每次嘗試結果寫入 settings——成功 → `stats_last_ok_at`／`stats_last_snapshot`／`stats_announce_date`，失敗 → `stats_last_error`（LINE API 簡短原因，如 `no_token`、429 quota 訊息）／`stats_last_error_at`／`stats_fail_count`；**連續失敗 ≥3 次自動開一張意見回饋單【報名公告推播失敗】**（同日最多一張，key `stats_fail_ticket_date`），成功後自動清掉失敗計數。後台 系統設定 tab 顯示「上次成功公告時間／上次失敗原因」＋「測試推播」按鈕。
-- **內容去重省額度**：異動觸發時若各項人數與 `stats_last_snapshot` 完全相同就不推送（LINE 免費帳號每月 200 則 push 額度有限）；periodic 與 manual 不受去重限制。
-- **診斷歷史（2026-08-24）**：8/23 新增報名未公告的排查結論——功能自 8/20 上線起在正式環境**從未成功推送過一次**（settings 無 `stats_announce_date` 可證）；程式邏輯正常、部署正常，根因為 LINE push 持續失敗。**同日經後台「測試推播」證實：LINE 回 `You have reached your monthly limit`＝免費官方帳號每月 200 則 push 額度已耗盡**（8 月上中旬大量彙整/AI 公告推播所致；能收到 429 代表請求有抵達 LINE，即 bot 仍在主群組、group id 正常，非退群）。額度每月 1 日重置，屆時公告自動恢復；reply（bot 問答回覆）不占 push 額度不受影響。上述可觀測性與測試推播即為此而加——部署後到後台按「測試推播」看 detail 即可分辨（`monthly limit`＝額度、400/404 group＝bot 退群需重新邀請）。公開 `/api/summary` 的 settings 已過濾所有 `stats_*` 鍵（防洩漏內部錯誤細節）。
-- **狀態追蹤（2026-08-29，遷移 Render 後）**：唯讀 SELECT 正式庫 settings 確認功能**本體正常**——`stats_fail_count=76`、`stats_last_error=You have reached your monthly limit.`、`stats_last_error_at=2026-08-28`（8/28 已開【報名公告推播失敗】意見單）、仍無 `stats_announce_date`（至今零成功）；與搬遷無關（LINE 憑證與程式碼均在 Render 生效，`stats_announce` 未設定＝啟用）。UptimeRobot 保活（每 5 分鐘 ping `/health`）同時確保 `startPeriodicStatsAnnounce` 30 分鐘週期不會因 Free 層休眠而漏跑——**9/1 額度重置後自動恢復推送，無需任何人工介入**；9/1 後若仍失敗先看後台「測試推播」detail。
-- `runEnforcement()` 現在回傳 `{ changed }`（有自動轉換發生時才觸發公告，lazy require 避免 deadlines→stats_announce→linebot→deadlines 循環依賴）。`test/review_k_stats_announce.js` 常駐守護。
-
-### Auth & Admin Roles (`auth.js`)
-- JWT middleware: `authMiddleware` for protected routes, `anyAdminMiddleware`（任何管理者）, `adminMiddleware`（僅系統管理員）, `requirePerm('功能key')`（功能權限）
-- Tokens expire in 24h. Frontend stores in `localStorage`
-- **兩種管理者**：系統管理員（`clubs.is_admin=1`，全部功能）與**次管理者**（`is_admin=0` + `clubs.admin_perms` 欄位存 JSON 權限陣列，如 `["registrations","payments"]`；`admin_perms` 非空即代表次管理者帳號，`is_admin=1` 時視為系統管理員）
-- 權限 key（對應後台各頁籤）：`registrations`(報名管理) / `payments`(繳費審核) / `clubs`(社團管理) / `settings`(系統設定) / `standby`(遞補順序) / `feedback`(意見回饋) / `linedigest`(LINE 彙整) / `announce`(AI 公告)；定義在 `auth.js` `ADMIN_PERMS`，前端 `admin.html` `ADMIN_TAB_OPTIONS` 需同步
-- Token payload：`isAdmin`（任何管理者為 true）、`superAdmin`（僅系統管理員）、`perms`（權限陣列，僅管理帳號帶）；**舊版 token（無 `perms` 欄位）視為系統管理員**，部署後舊登入 24h 內仍有效
-- 權限 gating：每個後台 tab 的 API 皆以該 tab 的權限 key 控管——`registrations`(報名管理：`/api/admin/all`、`payment/:id`、`forfeit/:id`、`reset-status/:id`、`export`)、`payments`(繳費審核：`/api/payment/all`、`review/:id`、`reset/:id`)、`standby`(遞補順序：`standby-list`、`promote/:id`)、`feedback`(意見回饋：`/api/admin/feedback`)、`linedigest`(LINE 彙整：`line-sources`/`refresh`/`line-digest`/`line-send`)、`announce`(AI 公告：`announce/generate`/`match`/`send`)、`clubs`(社團管理：clubs CRUD/import/reset-password)、`settings`(系統設定：`settings` GET/PUT、`backup`/`restore`/`clear-data`、`line-announce`、`knowledge` CRUD/toggle、`promote` 執行遞補)；次管理者 CRUD（`/api/admin/admins`）維持僅系統管理員；`/api/admin/clubs` GET 任何管理者可用（報名篩選用，次管理者看不到 `admin_perms`）；`/api/admin/change-password` 用 `anyAdminMiddleware`（次管理者可改自己密碼）
-- 次管理者管理（系統管理員專用）：`POST /api/admin/admins`（建立，`perms` 白名單過濾、帳號不可重複）、`PUT /api/admin/admins/:id/perms`（勾選權限，重新登入後生效）、`DELETE /api/admin/admins/:id`；重設密碼可走既有 `/api/admin/clubs/:id/reset-password`（預設＝帳號後四碼）。`GET /api/admin/clubs` 對次管理者隱藏 `admin_perms`（靠 `superAdmin` flag 判斷，任何管理者可讀社團清單供報名篩選用）
-- 登入回應含 `isSuperAdmin`、`adminPerms`；`index.html` 存 `localStorage`（`isSuperAdmin`/`adminPerms`），`admin.html` 依權限隱藏未開放頁籤並以勾選框管理權限（社團管理 tab → 管理者帳號與權限）
-- `clubs.admin_perms` 由 `database.js` 啟動 migration（`ALTER TABLE` try/catch）新增；backup/restore 已含此欄位（還原時 `c.admin_perms || ''` 兼容舊備份）
-- Default admin `admin`/`admin123` exists **only in fresh local `file:` DBs** (initialized by `database.js`); the production password was changed at go-live — never assume the default against the live Turso DB. Admins change their own password via `PUT /api/admin/change-password` (系統設定 tab).
-- Club passwords default to last 4 digits of `club_id`
-
-### Frontend (`public/`)
-- Pure HTML/CSS/JS, no framework, no build step
-- `index.html` — login page + 報名規則卡片（動態截止日、目前階段徽章）
-- `register.html` — registration form + card-based list（生日欄位民國年格式）
-- `payment.html` — payment proof upload
-- `summary.html` — public stats（表格標題顯示各階段截止日）
-- `admin.html` — admin panel with tabs (報名管理, 繳費審核, 社團管理, 系統設定, 遞補順序, 意見回饋, LINE 彙整, AI 公告; LINE 公告按鈕在 系統設定 tab)
-- `feedback.html` — 意見回饋表單（分類＋內容，auth 必要）
-- `css/style.css` — shared styles (warm earthy theme: `#f5f0eb` bg, `#c0714a` primary)
-- `css/guide.css` — guided tour overlay styles (spotlight, tooltip, pulse/bounce animations)
-- `js/guide.js` — guided tour engine (no dependencies, vanilla JS; first-visit auto-play + replay button)
-- `images/culroc-logo.jpg` — CULROC logo（CSS `mix-blend-mode: darken` 模擬去背）
-
-## Deployment (now Render; Railway kept as fallback)
-
-### Env Vars (Render Dashboard or API; Railway equivalent if rolling back)
-| Var | Required | Notes |
-|-----|----------|-------|
-| `TURSO_DATABASE_URL` | Yes | `libsql://...` format |
-| `TURSO_AUTH_TOKEN` | Yes | JWT from `turso db tokens create` |
-| `JWT_SECRET` | No | 未設時啟動自動生成 64-hex 並存入 Turso `settings` 表（key `jwt_secret`），重啟後從 DB 載回，登入不失效；無需手動設定 |
-| `LINE_CHANNEL_SECRET` | No | LINE Messaging API channel secret（webhook 簽章驗證用） |
-| `LINE_CHANNEL_ACCESS_TOKEN` | No | LINE Messaging API access token（回覆/推播用） |
-| `GEMINI_API_KEY` | No | Gemini API key（bot AI 回覆用；未設時 bot 回覆「AI 助理尚未設定」） |
-| `GEMINI_MODEL` | No | Gemini 模型名稱（預設 `gemini-3.5-flash-lite`，可改任何模型名如 `gemini-2.5-flash`；改動後重啟生效） |
-| `GEMINI_GROUNDING` | No | 設 `on` 才啟用 Gemini Grounding with Google Search（bot 可上網查資料再回答）；**Free tier key 無法使用搜尋**，呼叫失敗會自動退回首選模式，bot 不中斷（付費 key 後於 Render 開啟） |
-| `GEMINI_GROUNDING_MAX_MONTH` | No | 每月網路搜尋成功次數上限（預設 `4800`，刻意低於付費層每月 5,000 次免費搜尋額度）；用量記在 `settings` 表 key `grounding_YYYY-MM`（依 Taipei 月份自動歸零），達標後自動停用搜尋（bot 改一般回答）下個月自動恢復——防觸動付費 |
-| `SYSTEM_URL` | No | 對外網址（bot 知識庫與簡介連結用，預設為目前 production URL） |
-| `PORT` | No | Set automatically by the hosting platform |
-
-**Railway API gotcha**: `variableUpsert` mutation MUST include `serviceId` param, otherwise the variable is set at project level but not exposed to the running service. Query `services` to get the service ID first.
-
-**Current live state (自 2026-08-29 起 host = Render，功能沿革如下)**: production has `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `LINE_CHANNEL_SECRET`, `LINE_CHANNEL_ACCESS_TOKEN`, `GEMINI_API_KEY` (paid key — grounding 可用) set at service level; 2026-08-13 另設 `GEMINI_MODEL=gemini-2.5-flash`（預設 `gemini-3.5-flash-lite` 對該 key 搜尋會 429）與 `GEMINI_GROUNDING=on`（三層問答流程完整啟用）。`JWT_SECRET` is auto-generated into Turso settings. LINE bot (AI Q&A, feedback, group announce) is fully live and verified; LINE 彙整/轉送（line-sources/digest/send）隨 2026-08-10 部署上線、AI 公告（announce generate/match/send + LINE 關鍵字草稿觸發）隨 2026-08-11 部署上線（body-probe 已確認新程式碼生效）。2026-08-12：群組成員同步（announce/sync，含 line_messages 發送者後備）＋ webhook 送達診斷（line-diag）上線；已確認正式環境為**一般官方帳號**（members/ids 不可用，同步只能收錄有發言過的成員）且個別推播需各社先加好友。2026-08-13：AI 知識庫與三層問答上線（知識庫 → 網路搜尋註明來源 → 忙線＋自動開單）。同日第二波：文書上傳匯入（.pdf/.docx/.xls/.xlsx/.txt）上線——因 pdf-parse v2 需 Node ≥20.16 而 Railway 預設 Node 18 曾兩次部署 healthcheck 失敗，`package.json` 已加 `"engines": {"node": "22.x"}` 固定 Node 22 後才成功。2026-08-15：全域審查三批修復上線（71de514/6dc7e99/76603be）——19 個 async 路由補 try/catch、settings PUT 白名單防覆寫 `jwt_secret`、JWT secret 記憶化、webhook 600/min 限流、全站 500 錯誤訊息去內部細節、前端 XSS escape 補漏、登入/上傳防連點、`importClubs()` null guard、deadline 空字串防護；`test/review_i_security.js` 常駐守護上述修復。2026-08-17：全域審查批1（資安 HIGH）上線——`/api/summary`/settings/backup 全面過濾 `jwt_secret`（公開 API 另濾 grounding/webhook 計數器）、`reset-password` 加 `is_admin=0` 守衛、`importClubs`/POST clubs 改 ON CONFLICT DO UPDATE 守衛（club_id 正整數驗證，無法覆寫管理帳號）、付款檔案路徑 containment＋跨社讀取需 `payments` 權限、restore 過濾 `is_admin=1` 帳號與惡意 `file_path`/`jwt_secret`；`review_i_security.js` 擴充守護（S1-S6）。同日第二波（04c1587）：Gemini/LINE 穩健性——`doRequest` 重寫（429/5xx/網路錯誤重試、Retry-After + `retry after Xs` 正則、退避上限 20s、60s timeout）、Gemini 全域併發上限 2、grounding 計數器只在真搜尋時記錄、announce[clubs] dead-code retry 修正、`answerQuestion` try/catch 確定性走忙線開單、`replyMessage`/`pushToLineUser` 防 throw、`syncGroupMembers` 分頁中斷補 fallback、FEEDBACK_KEYWORDS 移除「希望」。2026-08-17 批次 3（818455e）：AI 公告圖片總量上限 6MB（伺服器端驗證）、admin.html 防連點（announceBusy Set）＋全域 fetch 401 處理（清 localStorage 跳登入頁）＋次管理者登入後自動載入首個可見頁籤、guide.js tooltip 測量修復。同日批次 4（f353850，穩健性 LOW）：restore **預先完整驗證**（含 `jwt_secret`/惡意 `file_path`/無效社號 → 400 拒絕且完全不動 DB；`file_path` 前導斜線剝除後驗證，舊版 `/uploads/...` 備份正常還原）、import-excel 改獨立 memory multer（xlsx 不再被圖片 filter 擋掉、無孤兒檔）、註冊/編輯欄位長度上限、PUT clubs 社名非空、繳費上傳魔數 sniff（JPG/PNG/GIF/PDF 檔頭驗證，不符 400 且刪檔）、rate limit（報名/意見 30/min、上傳/AI 公告 10/min）、全站 security headers（nosniff/DENY/same-origin）、LINE webhook 事件併發上限 5（佇列）、LINE push/reply 429 重試一次（尊重 Retry-After）、`parseClubAnnouncements` 同社去重、group-mode 公告 null 補一次重試、`promoteStandby` 改單一語句原子遞補（讀取＋寫入無空隙，併發不會超額）、payment review/reset 交易化（batch 'write'）、`GEMINI_GROUNDING_MAX_MONTH` NaN 守衛、Gemini key 改 `X-Goog-Api-Key` header、knowledge Excel 每工作表 200k 字上限、migration catch 只吞「duplicate column」；`review_i_security.js` 擴充守護（S1e 前導斜線備份還原、M2b 魔數、M2c 欄位長度、M2d xlsx 匯入）。2026-08-20：報名進度自動公告上線（`stats_announce.js`）——報名人數異動（15 秒 debounce）或每月 5/10/15/20/25/30 號自動推播目前報名人數及繳費情形到 LINE 主群組；`runEnforcement()` 回傳 `changed` 旗標、settings PUT 白名單新增 `stats_announce`（後台 系統設定 tab 勾選控制）；`test/review_k_stats_announce.js` 常駐守護。2026-08-24：stats 公告可觀測性上線（詳見「報名進度自動公告」節）——起因為 8/23 有新增報名但群組未收到公告，排查確認功能自 8/20 上線起在正式環境從未成功推送（settings 無 `stats_announce_date`），根因指向 LINE push 持續失敗；新增失敗記錄/連續失敗自動開單/內容去重省額度與 `POST /api/admin/stats-announce/test` 測試推播端點＋後台「測試推播」按鈕。同日測試推播證實根因＝**LINE 免費每月 200 則 push 額度耗盡**（`You have reached your monthly limit`，bot 仍在主群組非退群），9/1 額度重置後自動恢復。
-
-### Railway GraphQL API (account token — works, `railway` CLI doesn't)
-- Endpoint: `https://backboard.railway.com/graphql/v2` (or `backboard.railway.app`), header `Authorization: Bearer <token>`, `Content-Type: application/json`, body `{"query":"..."}`.
-- Tokens are created at **https://railway.com/account/tokens** (account-level, UUID4 format). 
-- **Verification quirk**: `query { me { id } }` returns `Not Authorized` even with a valid token. Verify with `query { __typename }` (returns `{"data":{"__typename":"Query"}}`) or `query { projects { edges { node { id name } } } }`.
-- This project: `projects` → `e981451a-db5f-42db-9a62-23f5f1889922` (industrious-renewal); service `registration-system` → `1dbe8188-dd80-44be-8d02-537e7815f7e9`; environment `production` → `9b0983a9-b37c-4533-b606-c2865f1c17bf`. Discover via `project(id){ services { edges { node { id name } } } environments { edges { node { id name } } } }`.
-- `variableUpsert` input fields: **`name`** (the variable key — NOT `key`), `value`, `projectId`, `serviceId`, `environmentId`, `skipDeploys`. Returns `Boolean!` — **no selection** (adding `{ id }` → 400). Env changes auto-trigger a redeploy (unless `skipDeploys`); rapid upserts dedupe into one deploy, extras show `REMOVED`.
-- `variables` query: `variables(projectId, environmentId, serviceId)` returns a JSON map, **no selection**. **Must pass `serviceId`** or you only see project-level vars (the linebot/Gemini vars will appear missing).
-- `deployments`: `deployments(input: { projectId, serviceId, environmentId }, first: N) { edges { node { id status createdAt } } }`.
-- **Deploy logs**: `deploymentLogs(deploymentId, limit)` / `buildLogs(deploymentId, limit)` return a plain list `[{ message }]` — no edges; **omit `limit` or select anything besides `message` → 400**. Use them to see the exact crash/healthcheck failure text when a deploy shows `FAILED` (buildLogs covers build + healthcheck; deploymentLogs covers runtime — e.g. the `Node.js v18.20.5` crash footer from running on too-old Node).
-- Redeploy latest commit: `serviceInstanceDeployV2(serviceId, environmentId)` — returns `String!` (deployment id, **no selection**). There is also `serviceInstanceDeploy(serviceId, environmentId, commitSha?, latestCommit?)`.
-- **Transient build failures happen**: a GitHub-triggered deploy once sat `BUILDING` ~10 min then `FAILED` with no retrievable logs (`buildLogs`/`deploymentLogs` often return empty) and meta showing `builder: RAILPACK`/null startCommand even though `railway.json` requests NIXPACKS. Retrying via `serviceInstanceDeployV2` succeeded immediately. Don't chase the failure — check `/health` after redeploy.
-- Real Turso creds are readable via the `variables` query — safe for **read-only SELECT** verification of production state (e.g., `settings.line_group_id`), never run enforcement/backup-restore against the live DB.
-
-### Deploy Flow
-- **2026-08-29 遷移至 Render（免費層）**：Railway 帳號 Trial 期滿（8/24 後）所有部署被暫停 → 正式環境遷到 Render Free；Railway 專案原封不動留作滾回（試用期滿後資料保留至 ~9/23，此後綁卡回收、專案仍可刪）
-- Push to `master` → **Render auto-deploys**（`autoDeploy=yes`，GitHub webhook 觸發）
-- Healthcheck: `GET /health` must return 200 within 30s
-- **Render service ID: `srv-da9a3opf2nfc73erdav0`**（截圖上的 ID 少字，以 API 回傳為準）；Render API key 由使用者於 dashboard Account Settings→API Keys 建立（`rnd_` 開頭）；env 變數修正用 `PUT /v1/services/{id}/env-vars/{key}` body `{"value":"..."}`（collection endpoint 405，單 key 端點才對）
-- Current production URL: `https://registration-system-bxgr.onrender.com`（`/health` and `/api/summary` are public for quick checks）
-- **Render Free 代價**：閒置 15 分鐘休眠、冷啟動 ~1 分鐘；`uploads/` ephemeral 磁碟重啟/休眠即清空（與 Railway 相同）——**檔案本體已存 DB（`payment_proofs.file_data`），重啟不受影響**。每月耗 ~720-744 小時 ⇒ 750 小時限額內（由保活 ping 持續喚醒）
-- **保活（2026-08-30 起改由 UptimeRobot）**：`.github/workflows/keepalive.yml`（GitHub Actions cron `7,17,27,37,47,57 * * * *` ping `/health`）在**本 repo 已證實失效**——schedule event 超過 18 小時從未觸發（已知 GitHub 臭蟲：repo 從未跑過排程時靜默不註冊；即使 manual `workflow_dispatch` 正常、改 cron 避開整點、push 重同步，cron 仍不觸發）。**不要依賴它保活**；真正的保活是使用者註冊的 **UptimeRobot 免費帳號**（HTTP 監控 `https://registration-system-bxgr.onrender.com/health`、5 分鐘間隔）——排查冷啟動/休眠問題時先查 UptimeRobot 是否 UP，GitHub Actions 側看 `gh run list`（只有 manual dispatch 屬正常）。workflow 保留當無效備援即可，勿再花時間調它
-- **繳費證明檔案持久性（2026-08-30 起）**：上傳檔案本體存入 Turso DB，不再依賴 ephemeral `uploads/`。遷移保護：`initDatabase()` 加 `file_data` 欄位，啟動時 `backfillPaymentFileData()` 把仍殘留磁碟的舊檔案讀回 DB；`GET /api/payment/file/:id` 以 DB blob 優先、磁碟 fallback（僅相容遷移前的歷史紀錄）。backup JSON 仍 **不含檔案內容**（`file_data` 排除），避免撐爆 restore 10MB body 限制——Turso DB 即持久層。
-- **Detect whether a deploy actually switched versions**: `POST /api/login` with a ~180KB body → new code (10mb `express.json`) parses fine and returns a JSON 4xx (e.g. `400` 「請輸入帳號和密碼」 without credentials), old code (100kb limit) returns HTML 500. Useful because rolling deploys may never drop `/health`.
-- The `railway` CLI is installed but **not linked/logged in** in this environment (`railway whoami` / `railway variables` print nothing). Use the GraphQL API with an account token instead (see below) — do not assume `railway` commands work.
-- If deploy fails with "Healthcheck failure" or "Application failed to respond":
-  - Check that routes are registered before `initDatabase()`
-  - Check that `initDatabase()` is non-blocking
-  - Check that env vars are set on the hosting platform (Render first; Railway if rolling back)
-
-### Common Failure Modes
-1. **502 on all API routes**: Routes not registered (blocked by `await initDatabase()`)
-2. **500 on API routes + pages work**: DB not connected (env vars missing or init failed)
-3. **Healthcheck failure**: `app.listen()` not called before DB init
-4. **"Cannot read properties of undefined"**: Missing DB data (new Turso DB needs club import)
-5. **Health works but API 404**: Wrong service URL — confirm you're hitting the right host (`onrender.com` or Railway fallback)
-6. **Build OK + image pushed but "1/1 replicas never became healthy"**: runtime crash — pull `deploymentLogs(deploymentId, limit)` (buildLogs works too; `{ message }` list, no edges). Typical cause: a dependency requiring a newer Node than Nixpacks' default Node 18 (pdf-parse v2 needs `process.getBuiltinModule`, Node >=20.16 — crash shows `Node.js v18.20.5` footer). Fix: `package.json` `"engines": { "node": "22.x" }` — **never remove it**, the doc-import stack depends on it.
-
-## API Routes
-- `POST /api/login` — returns JWT token (rate-limited: 10 attempts / 15 min)
-- `GET /api/me` — current club/admin info (auth required)
-- `GET /api/summary` — public stats (no auth): per-club `phase1_registered/standby/paid/phase1_total/phase2_count` + totals `phase1Total`, `phase1PaidTotal`, `phase2Total` + `settings` (deadlines, quotas)；**只列一般社團**（`WHERE is_admin=0 AND (admin_perms IS NULL OR admin_perms='')`，次管理者不算社，別把這條件簡化掉）
-- `POST /api/registrations` — create registration (auth required; phase & status derived from dates, auto-standby logic; rate-limited 30/min；欄位長度上限：姓名/職位 50、身分證 30、生日 20、電話 30、餐點 20)
-- `GET /api/my-registrations` — list club's registrations (auth required)
-- `PUT /api/registrations/:id` / `DELETE /api/registrations/:id` — club edits/deletes own registration; rejected when status is `paid`/`forfeited`
-- `GET /api/admin/all` — all registrations with filters: club_id, phase, status (admin only)
-- `PUT /api/admin/payment/:id` — mark registration as paid (admin only)
-- `PUT /api/admin/forfeit/:id` — mark registration as forfeited (admin only)
-- `PUT /api/admin/reset-status/:id` — reset registration to registered (admin only)
-- `PUT /api/admin/change-password` — admin changes own password (body: `currentPassword` + `newPassword` ≥ 8 chars; UI in 系統設定 tab)
-- `POST /api/admin/promote` — auto-promote Phase 1 standby to fill quota (admin only)
-- `GET /api/admin/standby-list` — list standby from BOTH phases (admin only)
-- `POST /api/admin/promote/:id` — manual promote single standby, respects 160 cap (admin only)
-- `GET /api/admin/clubs` + `POST/PUT/DELETE /api/admin/clubs` / `PUT /api/admin/clubs/:id/reset-password` — club management CRUD (admin only; GET 任何管理者可用，公告篩選用，次管理者看不到 `admin_perms`)
-- `POST /api/admin/admins` / `PUT /api/admin/admins/:id/perms` / `DELETE /api/admin/admins/:id` — 次管理者建立（`perms` 白名單過濾、帳號不可重複、至少一項權限）/ 勾選權限（重新登入生效）/ 刪除（system admin only）
-- `PUT /api/payment/review/:id` — approve/reject payment proof (admin only)
-- `PUT /api/payment/reset/:id` — reset payment proof to pending (admin only)
-- `POST /api/feedback` — submit feedback (auth required; categories 操作問題/錯誤回報/功能建議/其他, max 2000 chars)
-- `GET /api/admin/feedback` / `PUT /api/admin/feedback/:id` — list (open first, newest first) / toggle open↔done (admin only)
-- `POST /api/admin/line-announce` — push a message to the LINE group the bot joined (admin only; 501 if LINE not configured)
-- `POST /api/admin/stats-announce/test` — 報名進度公告測試推播（admin only, `settings` 權限）：強制立即發送一次（繞過內容去重），回 `{ ok, detail, last_ok_at }`——失敗時 `detail` 為 LINE API 錯誤原因（如 `no_token`／429 quota／group 相關錯誤），供後台「測試推播」按鈕與診斷
-- `GET /api/admin/knowledge` / `POST /api/admin/knowledge` / `PUT /api/admin/knowledge/:id` / `POST /api/admin/knowledge/:id/toggle` / `DELETE /api/admin/knowledge/:id` — AI 知識庫 CRUD（bot 問答第 1 層資料，admin only; toggle 切換啟用/停用）
-- `POST /api/admin/knowledge/upload` — 上傳文書檔案建知識（admin only; multipart `files` 欄位多選 ≤5 檔、每檔 ≤20MB；支援 .pdf/.docx/.xls/.xlsx/.txt，`knowledge_import.js` 抽取文字、>2500 字自動分段多筆、Excel 逐工作表一筆；單檔失敗不中斷其餘，200 + `details` 逐檔回報；掃描 PDF/空白檔回 failed 細節；單檔文字 >200,000 字截斷；成功列以 `source_file` 記原檔名）
-- `POST /api/admin/knowledge/delete-file` — 依 `source_file` 整檔刪除（admin only; body `filename`；一次清掉該檔產生的全部段落/工作表知識）
-- `GET /api/admin/line-sources` — list LINE 彙整 sources (`line_sources` + per-source message counts; admin only)
-- `GET /api/admin/line-diag` — webhook 送達診斷（admin；`recordWebhookDiag()` 在每次 webhook POST 把計數寫進 settings：`webhook_pings`/`webhook_events`/`webhook_rejected`/`webhook_last_at`/`webhook_last_types`/`webhook_last_sources`，另有 `line_group_id`），回應含 `line_sources`/`line_messages` 筆數；UI 在 LINE 彙整 tab「Webhook 診斷」按鈕——測試法：記下收件總數→群組傳訊息→再查，數字不動代表 LINE 主控台沒把事件送到本系統（查「使用 Webhook」開關/URL）
-- `POST /api/admin/line-sources/refresh` — re-fetch source names from LINE (group summary / profile APIs) **並且同步群組全部成員進 `line_sources`（＝announce/sync）**（admin only; failures keep old values）
-- `POST /api/admin/line-digest` — digest messages from one source (body: `source_type`/`source_id`/`since`/`until`/`kind` summary|questions; max 500 rows; 400 when no messages in range; 500 graceful when Gemini unavailable)
-- `POST /api/admin/line-send` — push arbitrary text to a target (`target_type` group|user + `target_id`; user push needs the user to have added the official account as friend, else 501)
-- `POST /api/admin/announce/generate` — AI 公告產生（admin；body `raw` ≤8000 字 + 選用 `instructions`，**並可帶 `images` 陣列（≤5 張、每張 ≤2MB base64、mime 白名單 PNG/JPG/WebP/GIF）讓 Gemini 直接判讀圖片截圖/圖表內的社號與事項**；`raw` 與 `images` 皆空才 400）：Gemini 並行產出「群組總公告版」`broadcast`（LINE 簡訊版，仿 LINE 彙整 graceful 模式）與「各社個別版」`perClub`（JSON 陣列 `[{club_id, club_name, message}]`，每社只含自己的事項；club_id 白名單＝原始資料內出現的 4 碼數字，**提供圖片時放寬為模型輸出中格式正確的 4 碼社號**（防幻覺仍靠後續 announce/match 比對 `line_sources` 把關），防 Gemini 幻覺；JSON parse 失敗自動重試一次；無 key → 500「AI 公告產生失敗」）
-- `POST /api/admin/announce/sync` — 同步群組成員（admin；`syncGroupMembers()`：對每個 group 來源分頁拉 `GET /v2/bot/group/{id}/members/ids` 全部成員 → 逐個 `GET /v2/bot/profile/{userId}` 取名稱 → upsert 進 `line_sources` 為 user（`ON CONFLICT DO UPDATE SET source_name`，不動 `last_message_at`）；**members/ids 失敗（如 bot 已退群、群組 id 過期）時自動 fallback：改收錄該群組 `line_messages` 的發送者**；**只有傳過訊息給 bot 的人才會被 `line_sources` 收錄**，群組內從未傳訊息的成員靠此同步後才能被 announce/match 比對；回應含 `enrolled`/`failed`/`groups`（每群組 ok/status/apiMembers/fallbackMembers）/`samples`（前 5 位名稱）供 UI 顯示診斷；無 LINE token 時全部為 0
-- `POST /api/admin/announce/match` — 依社號/社名比對 `line_sources.source_name`（群組類型排序在前），回每社 `candidates`（含 source_type/source_id/source_name）；比對不到回空陣列
-- `POST /api/admin/announce/send` — 發送 AI 公告（admin）：`mode:'group'`＋`text` → 推播 `line_group_id`（未設定 501）；`mode:'clubs'`＋`items:[{club_id, club_name, message, target_id}]` → 逐筆 `pushToLineUser`，**逐筆回報** `delivered`/`failed`（有失敗不中斷其餘，整批仍回 200）
-- `POST /line/webhook` — LINE Messaging API webhook (no auth; rate-limited 600 req/min 防灌水；validates `X-Line-Signature` HMAC-SHA256 with `LINE_CHANNEL_SECRET`; empty-event requests pass WITHOUT signature so LINE console URL verification works; acks 200 then processes events async **with concurrency cap 5**（`processLineEvent` 佇列）)
-- `GET /api/payment/file/:id` — view payment proof file (auth required: owning club, or admin with `payments` 權限；DB `file_data` BLOB 優先回傳，無 blob 才磁碟 fallback（`../` 穿透仍 → 403））
-- `GET /api/payment/my-uploads` (club) / `GET /api/payment/all` (admin) — list payment proofs
-- `POST /api/payment/upload` — 繳費證明上傳（auth; rate-limited 10/min；**memory storage、內容直接存 DB blob**；**魔數 sniff**：JPG/PNG/GIF/PDF 檔頭不符 → 400 且刪檔）
-- `POST /api/admin/payment-proofs/cleanup` — 清除所有繳費證明檔案本體（admin only, `payments` 權限）：`file_data` 全設 NULL、保留列與審核狀態，回 `{ cleared, message }`。報名截止且完成審核後執行以釋放 Turso 儲存；後台按鈕在 繳費審核 tab，含 confirm 與 toast
-- `POST /api/admin/import-clubs` — bulk import clubs (admin only)
-- `POST /api/admin/import-excel` — import from XLSX (admin only; **獨立 memory multer**，只收 .xlsx/.xls 副檔名，不落盤）
-- `GET /api/admin/backup` — full backup as JSON (admin only; `settings` 節不含 `jwt_secret`，restore 也不會還原它)
-- `POST /api/admin/restore` — restore from JSON (admin only; **預先完整驗證**：含 `jwt_secret`/惡意 `file_path`（`..`、絕對路徑）/無效社號 → 400 拒絕、完全不動 DB；`file_path` 前導斜線剝除後驗證（舊版 `/uploads/...` 備份相容）；`is_admin=1` 帳號跳過不還原）
-- `POST /api/admin/clear-data` — clear all registrations & payment proofs (keeps clubs & settings) (admin only)
-- `GET /api/admin/settings` / `PUT /api/admin/settings` — read (incl. `derived_phase`, `today`, `occupancy`, `remaining`) / update deadline+quota settings (admin only; **PUT 有 key 白名單**：僅 `phase1_deadline`/`payment_deadline`/`phase2_deadline`（需 YYYY-MM-DD）/`guaranteed_quota`/`phase1_total_quota`（需正整數）/`line_group_id`/`bot_name`/`stats_announce`，白名單外 key 一律忽略，防止覆寫 `jwt_secret` 等系統內部設定）
-- `GET /api/admin/export` — export as XLSX (admin only); accepts `club_id`/`phase`/`status` filters, applied to BOTH sheets (報名資料 + 彙整統計)
-- `GET /health` — health check (no auth)
-
-## Key Gotchas
-
-### Timezone
-- Turso `CURRENT_TIMESTAMP` stores UTC
-- Frontend must use `new Date(value + 'Z').toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })` to display correct Taiwan time
-
-### Payment Approval Bulk Effect
-- When admin approves a payment proof, ALL `status='registered'` registrations for that club are updated to `paid` (not just one)
-- Club payments cover all members at once
-
-### Payment Files Are Auth-Protected
-- `/uploads` is NOT served statically. Files are accessed via `GET /api/payment/file/:id` with a JWT (admin or owning club)
-- Frontend loads images/PDFs via `fetch` + blob URL (a plain `<img src>` / `<a href>` cannot send the Authorization header)
-- Rejecting a proof keeps the file in DB so it can still be reviewed; the club can upload a new proof which creates a new row
-- **檔案本體存於 DB**（`payment_proofs.file_data`）：重啟/休眠/部署不會遺失。磁碟 `uploads/payments/` 只是歷史遺留（啟動時 `backfillPaymentFileData()` 會把舊檔案讀回 DB,之後一律 DB 優先）；`ext` 由 `file_name` 副檔名判斷 content-type
-
-### Admin Downloads Are Auth-Protected Too
-- `GET /api/admin/export` and `GET /api/admin/backup` require the JWT header — a `window.open(url)` / plain `<a href>` navigation cannot send it and returns `{"error":"未登入"}` (401)
-- Download pattern: `fetch` with `Authorization` header → `res.blob()` → object URL → `<a download>` click → revoke (see `exportExcel()` / `backupData()` in `public/admin.html`). Do NOT "simplify" back to `window.open`.
-
-### Registrations Locked After Paid/Forfeited
-- Clubs cannot edit or delete registrations whose status is `paid` or `forfeited` (server rejects with 400, UI hides the buttons)
-
-### Registration Sorting
-- Summary page sorts clubs by earliest registration time first (ASC), no-registration clubs last
-
-### Summary Metrics Switch After Payment Deadline
-- In `summary.html`, once `today > payment_deadline`, the 第一階段 header card switches to `phase1PaidTotal` AND each club's 第一階段 column shows `phase1_paid` (已完成報名並繳費). Before the deadline both show the total (`phase1Total` / `phase1_total`).
-- Both numbers must stay on the SAME metric — a past bug shipped an inconsistent page (header = total 60, rows = paid 51). `/api/summary` returns both `phase1Total` and `phase1PaidTotal` for this reason.
-
-### Export 彙整統計 Sheet Inlines Validated Literals
-- The export `彙整統計` sheet builds `rowCond`/`clubCond` as inline SQL with **validated literals** (`phase` → `parseInt`, `status` → whitelist array, `club_id` → `parseInt`), NOT `?` placeholders. The condition is repeated across every `COUNT(CASE ...)` column, so `?` placeholders would be duplicated while params are bound once — libSQL binds the rest as NULL and every count silently returns 0.
-- The 報名資料 sheet uses normal parameterized `?` queries (each condition appears once) — leave those as-is.
-
-### Export 報名資料 Sheet Status Mapping
-- `server.js` maps `r.status` for the 報名資料 sheet: `registered → 已報名`, `standby → 候補`, `paid → 已繳費`, everything else → `棄權`. Never collapse `standby` into the `棄權` fallback (past bug #2); `test/review_b_export.js` guards this mapping.
-
-### API 錯誤訊息不得洩漏內部細節
-- 所有 500 回應一律用泛化訊息（「載入失敗」「操作失敗，請稍後再試」「匯入失敗，請稍後再試」…），詳細原因只進 `console.error`，**不要回傳 `err.message`**（可能含 SQL 語法、檔案路徑等內部資訊）。
-- 例外：上傳類 400（multer fileFilter「不支援的檔案格式…」、超過大小限制）刻意回傳明確訊息給使用者；`knowledge/upload` 200 回應的 `details[].error` 逐檔失敗原因（判讀失敗等）刻意保留供後台顯示。
-
-### Birthday Field (民國年)
-- Backend stores dates in Western format (`YYYY-MM-DD`)
-- Frontend (`register.html`, `admin.html`) converts to ROC format for display (`westernToROC()`) and back for storage (`rocToWestern()`)
-- Input format on register page: `民國年/月/日` (e.g., `113/08/15`)
-
-### Summary Table Deadline Headers
-- `summary.html` fetches `/api/summary` and dynamically updates table headers to show deadline dates (e.g., `第一階段 (截止: 2026-09-20)`)
-
-### Guided Tour (操作導覽)
-- `js/guide.js` + `css/guide.css` provide a reusable guided tour engine
-- Steps defined per page via `window.GUIDE_STEPS` and `window.GUIDE_PAGE`
-- First-visit auto-play (localStorage `guideSeen_<page>`) + persistent replay button; auto-play starts 1800ms after load (delayed so browser UI prompts like the password-save bubble don't overlap)
-- Uses `mix-blend-mode: darken` on spotlight for visual highlight; tooltip auto-flips to avoid covering targets
-
-### Toast & Password Toggle
-- `js/toast.js` exposes `window.toast(msg, 'success' | 'error')` — used by `admin.html` (replaces native `alert()`; `confirm()` for destructive ops stays native). Styled via `.toast-container` / `.toast-*` in `style.css`.
-- `.password-wrap` + `.password-toggle` (eye SVG) toggles password visibility on the login page (`index.html`) and admin change-password fields (`cpCurrent`/`cpNew`); each page defines its own `togglePassword(inputId, btn)`.
-
-### Feedback & LINE Bot
-- `public/feedback.html` (auth required) submits to `feedback` table via `POST /api/feedback`; admin views/marks via 意見回饋 tab (`/api/admin/feedback`).
-- `linebot.js` — LINE Messaging API integration: `verifySignature()` (HMAC-SHA256, needs rawBody captured via `express.json({ verify })`), `handleLineEvent()` (records every text message into `line_messages` + upserts `line_sources`; ANY event with a `groupId` — join or group message — upserts `line_group_id` into settings; join also sends a welcome message; 「公告：<原始資料>」前綴 → `generateAnnouncement()` 產生草稿回覆（**僅限區會主群組 `line_group_id` 觸發，只回草稿不自動推播**）)；text messages containing 意見/建議/回報/改進/壞掉/bug/臭蟲 → saved to `feedback` with a guessed category, else **三層問答流程** `answerQuestion()`：第 1 層知識庫（`retrieveKnowledge()` 關鍵字計分（中文字串雙字元 bigram＋4 碼數字加權）取 top-3 ≤6000 字併入 system prompt，未命中要求模型只回「無相關資料」標記）→ 第 2 層網路搜尋（只在此時開 `googleSearch`；用 API 回傳 `groundingMetadata.groundingChunks` **決定性判斷**是否真的用了搜尋，有則自動附註「（資料來源：網路查詢：<網址>）」；未命中回「無法回答」標記）→ 第 3 層忙線（回覆「抱歉，因忙線中暫時無法回答。您的問題我已記錄，稍後回覆您，請見諒！」＋自動開 feedback 單【AI 未解答】讓管理員接手；可設 `settings.bot_name` 帶分身署名（如「（張三）」））。第 2 層由 `GEMINI_GROUNDING` 開關 + **monthly search counter**（`settings.grounding_YYYY-MM`, cap = `GEMINI_GROUNDING_MAX_MONTH` 預設 4800 — 防觸動付費；`getGroundingUsage()`/`canUseGrounding()`/`recordGroundingUse()`）把關，搜尋失敗自動退無搜尋呼叫；無 `GEMINI_API_KEY` 時確定性走忙線分支（`test/review_g_knowledge.js` 守護）。`generateAnnouncement()`（AI 公告：群組版＋各社版 JSON 白名單驗證；可帶 `images` 陣列讓 Gemini 直接判讀截圖/圖表——`geminiRequest()` 以 `inline_data` part 組入，`parseClubAnnouncements()` 有圖片時放寬為接受模型輸出中的 4 碼社號）, `pushToGroup()` (announcements via 系統設定 tab button → `POST /api/admin/line-announce`; 501 when unconfigured), `pushToLineUser()` (arbitrary target push for the LINE 彙整 send flow), `refreshSourceNames()` (enrich `line_sources` names via group summary / profile APIs), `syncGroupMembers()` (enrich 群組成員進 `line_sources` 供 AI 公告比對), `summarizeMessages()` (digest a message list via Gemini — 重點摘要 or 待確認疑問清單).
-- LINE 群組訊息：現行平台會把群組內**所有**訊息事件送到 bot（無需 @提及；被 @ 時額外帶 `mention.mentionees[].isSelf=true` metadata）。webhook 先 ack 200 再異步處理事件。`feedback` 表含在 backup/restore 中。
-- LINE 彙整與轉送（管理後台「LINE 彙整」tab）：來源＝`line_messages` 去重（群組/個別社 1:1 都收）；管理員選來源＋時間範圍＋彙整類型 →「彙整並直接傳送」一鍵呼叫 `POST /api/admin/line-digest` 產出後 `POST /api/admin/line-send` 推送到指定對象（個別社 push 需要對方已加官方帳號好友，非好友 501）；「僅預覽」只產出不送出。
-- AI 公告（管理後台「AI 公告」tab）：貼入原始資料（社號/社名/日期/事項，如催繳名單）或**貼上圖片/截圖（選檔、拖放或 Ctrl+V 貼上，最多 5 張 × ≤2MB，可與文字並存）**＋選擇性指示 → `generateAnnouncement()`（Gemini 直接判讀圖片內容）並行產出群組總公告版與各社個別版 → 各社自動比對 `line_sources.source_name`（含社號或社名；群組優先），可編輯內容、逐社或全部傳送、逐筆回報結果。**比對不到來源時先按「同步群組成員名單」**（`syncGroupMembers()` 拉群組內所有成員進 `line_sources`，名稱含社號如「2401 眉溪--秀珍LYU」，同步後自動重新比對）——只有傳過訊息給 bot 的人原本就會被收錄，其他群組成員必須同步後才比得到。群組總公告在 LINE 主群組發「公告：<原始資料>」給 bot 即可讓 bot 產生草稿回覆（**僅限區會主群組觸發，只回覆草稿不自動推播**，正式推播一律走管理後台）。
-- **LINE 好友與帳號類型限制**（個別推播/比對成敗關鍵）：① 抓用戶 profile（名字）與個別 push 都**必須對方已加官方帳號好友**（非好友：profile 404、push 回報 failed）；群組推播（`pushToGroup`）只需 bot 在群組、**不需好友**。② `GET /v2/bot/group/{id}/members/ids`（列出全群成員）**僅限認證帳號/企業官方帳號**（LINE 官方文件明載）；一般官方帳號（灰盾）呼叫會失敗 → `syncGroupMembers()` 自動 fallback 只收錄「該群組在 `line_messages` 實際發過訊息的人」——曾見「同步只收到管理員自己」就是此因。③ 實務：要個別推播 → 請各社代表**加好友＋在群組傳過一則訊息**（或私訊 bot 一句）後再按同步；LINE 官方帳號**沒有「自動加入好友」開關**（好友只能由用戶主動加 QR/連結），不要找這設定。
-- LINE Developers 主控台（非程式碼）gotchas：① Channel → Messaging API 頁籤需將「使用 Webhook」設為 ON，Webhook URL 指向 `https://.../line/webhook`；② 官方帳號「自動回應訊息」若未停用，用戶會同時收到 LINE 預設回覆與 bot 回覆（設定位置：manager.line.biz → 設定 → 回應訊息）；③ 「自動退出群組」開關若開啟，bot 被邀請進群會立刻自動退出（曾踩坑：bot 反覆進群即退，直到主控台關閉該設定）。
-- Gemini 模型注意：模型名稱由 `GEMINI_MODEL` 控制（預設 `gemini-3.5-flash-lite`），改動後重啟生效。曾因 API key 對 `gemini-2.0-flash` 免費額度為 0（429 limit:0）導致 bot 回退「AI 助理尚未設定」，改用 `gemini-2.5-flash` 後正常；若未來再遇 429，可先用 `generateContent` 實測各模型額度，再調整 `GEMINI_MODEL`。
-- 免費 key 可用範圍：**一般問答與彙整（無搜尋）免費 key 即可**（`gemini-3.5-flash-lite` 輸入/輸出免費）；**網路搜尋（Grounding with Google Search）官方明載 Free tier 不支援，必須付費 key**。付費後 Gemini 3 系每月 5,000 次搜尋免費、超過 $14/1000 次；付費另享較高 rate limit（免費 tier 有 RPM/RPD 上限，群組訊息量大時可能卡額度）。
-- E2E 驗證撇步（不需真實用戶）：用 `LINE_CHANNEL_SECRET` 對測試 body 算 HMAC-SHA256 簽章 POST 到 `/line/webhook`（PowerShell `HMACSHA256` + Base64）→ 200 代表部署實例的 secret 正確；帶 `source.groupId` 的訊息事件會寫入 `line_group_id`，可再用 Render env-vars（或舊 Railway variables）拿到的 Turso creds 對正式庫 SELECT 確認。
-
-## File Structure
-```
-server.js        — Express app + all routes (startServer is sync, not async)
-database.js      — Turso cloud operations (@libsql/client), db starts as null
-deadlines.js     — date-driven phase state machine + auto promote/forfeit (enforceDeadlines middleware, non-blocking with debounce)
-linebot.js       — LINE Messaging API integration (signature verify, AI reply, feedback logging, group push)
-knowledge_import.js — 知識庫文書抽取（txt/pdf-parse/docx-mammoth/xlsx-SheetJS）、大檔分段、中文檔名 mojibake 還原
-stats_announce.js — 報名進度自動公告（異動 debounce 觸發＋每月隔 5 日週期觸發，推播到 LINE 主群組）
-auth.js          — JWT auth middleware
-public/          — Frontend HTML files
-public/css/      — Shared styles (style.css + guide.css)
-public/js/       — Guide tour engine (guide.js) + toast utility (toast.js)
-public/images/   — Logo assets (culroc-logo.jpg)
-uploads/         — Payment proof files (gitignored; 歷史遺留，檔案本體已改存 DB `file_data`)
-data/            — gitignored local SQLite scratch DB (`data/registration.db`, from manual `file:` runs)
-test/            — regression + simulation scripts (see Verification; *.db gitignored)
-test/launch-chrome.ps1 — one-command Chrome + remote-debugging launcher for MCP browser testing
-docs/影片生成素材.md — Gemini Notebook 影片素材（分鏡＋字幕逐字稿＋準確資料附錄）
-docs/報名系統簡介.html — 漫畫風動畫簡報（原始檔，先於 public 版本存在）；**public/intro.html 是它的部署副本，兩個檔案必須保持一致**：改動任一檔後務必 `Copy-Item` 覆寫另一檔（比對 hash 確認），不然網站分享的是舊版
-RAILWAY_SWITCH_MEMO.md — Railway Trial→Free 方案切換備忘（2025/8 舊文件；其中 admin/admin123 已是舊密碼，勿對正式庫使用）
-railway.json     — Railway deploy config (Nixpacks builder)
-```
-
-Repo root also holds **untracked local clutter** (manual `backup_*.json` exports, logo/screenshot images, docx/xlsx exports). `.gitignore` now covers root `backup_*.json`/`*.docx`/`*.xlsx`/`*.jpg`/`*.png` — but don't rely on it alone: never `git add .`; commit only intended files. One of these root `backup_*.json` files is what `test/review_c_backup.js` expects as its seed source (the gitignore rule doesn't delete it — it stays available locally).
-
-## License
-MIT License
+## Gotchas
+- 時區：Turso 存 UTC，前端顯示 `new Date(v+'Z').toLocaleString('zh-TW',{timeZone:'Asia/Taipei'})`
+- 繳費審核通過：同一 `club_id` 全 `registered → paid`
+- 檔案皆記憶體上傳：`multer.memoryStorage`，魔數 sniff（JPG/PNG/GIF/PDF），`my-uploads`/`payment/all`/`backup` 不含 `file_data`
+- 管理員下載（`export`/`backup`）須 `fetch` 帶 `Authorization` 轉 `blob` 再 `<a download>`，不可 `window.open`
+- `pending`/`forfeited` 不可編輯/刪除報名
+- `summary` 依最早註冊排序，無報名者置底；`today>payment_deadline` 時 header 與各列同切 `phase1PaidTotal`/`phase1_paid`
+- `export` 彙整統計的 `rowCond/clubCond` 為內聯已校驗字面量（不可用 `?`，否則 libSQL 計數歸 0）；`registered→已報名/standby→候補/paid→已繳費/其餘→棄權`
+- 公開 API 過濾：`GET /api/summary` 與 `backup` 過濾 `jwt_secret` + `stats_*`/`push_*`/`grounding_*`/`webhook_*`
+- `/api/admin/settings` PUT 僅白名單 `phase1_deadline/payment_deadline/phase2_deadline/guaranteed_quota/phase1_total_quota/line_group_id/bot_name/stats_announce`
+- 報名欄位長度上限與 `PUT clubs` 社名非空校驗；`restore` 預先全量校驗含 `jwt_secret`/惡意 `file_path`/非法 `club_id` → 400 不動 DB
