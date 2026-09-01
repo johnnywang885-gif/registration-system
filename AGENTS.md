@@ -54,6 +54,7 @@ npm run dev        # node --watch
 - 內容：`collectStats()` 各階段人數 + 繳費社數 + 剩餘；`stats_announce=off` 全停（`settings` 白名單可寫）
 - 去重：`change` 時 `stats_last_snapshot` 相同則跳過不計失敗
 - **月預算**：`push_YYYY-MM` 計成功 `push` 數（群組 1 則、各社逐筆各 1），`PUSH_MAX=200`（`PUSH_MONTHLY_LIMIT` 可覆蓋）、`PUSH_WARN=180`（`PUSH_MONTHLY_WARN`），`stats` 自動達 `WARN` **完全跳過**不計失敗；`pushToDetail` 超 `MAX` 硬擋 429，遇 `You have reached your monthly limit` 自動同步本地 `push_YYYY-MM=MAX`；下月 key 自動重置；`test/review_k_stats_announce.js` 守護
+- **免額度替代（`push` 滿額仍可用）**：主群組輸入 `統計`/`報名進度`/`目前報名`/`查統計` → `linebot.js` 以 `replyMessage` 回 `buildStatsMessage()`（不計 `push`）；後台 `GET /api/admin/stats-message` 回同款文字供 `admin.html` 一鍵複製手動貼上
 
 ### Auth (`auth.js`)
 - `authMiddleware` / `anyAdminMiddleware` / `adminMiddleware` / `requirePerm(key)`（`ADMIN_PERMS` 與 `admin.html ADMIN_TAB_OPTIONS` 同步：`registrations`/`payments`/`clubs`/`settings`/`standby`/`feedback`/`linedigest`/`announce`）
