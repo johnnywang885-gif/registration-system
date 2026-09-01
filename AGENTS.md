@@ -45,9 +45,10 @@ npm run dev        # node --watch
 
 ### Phase / Deadlines (`deadlines.js`)
 - Phase 由日期推算（非 `current_phase`）：`today<=phase1_deadline → phase1`；`phase1<today<=payment → phase1_closed`；`payment<today<=phase2 → phase2`；`>phase2 → closed`（`taipeiToday()` 台北 `YYYY-MM-DD`，截止日當天仍計入）
-- 總額 `phase1_total_quota` 預設 160（占位=`registered`+`paid`）；候補/棄權不占位
+- 總額 `phase1_total_quota` 預設 160（占位=`registered`+`paid`，**含督導/幹事 2 保障席**）；候補/棄權不占位
 - `enforceDeadlines` 掛 `/api` 中介層 + 啟動一次，5s debounce；`runEnforcement()` 回 `{changed}` 才觸發 `scheduleStatsAnnounce()`
 - `POST /api/admin/promote` 與 `promote/:id` 受 160 上限；`standby-list` 含兩階段依 `created_at`
+- **幹部保障**：`is_admin=1` 或 `admin_perms` 非空的管理者以本帳號 `POST /api/registrations`（`position=督導/幹事`）視為保障佔位——跳過 `guaranteed_quota`/`occupancy` 的 `standby` 判定，`forfeitUnpaidByPhase` 亦排除管理者，免繳費不棄權；`admin.html` 總額旁已註記「含督導及幹事 2位」
 
 ### Stats Announce (`stats_announce.js` + `linebot.js:pushToDetail`)
 - 雙觸發：異動（註冊/刪除/繳費審核/遞補/清空/還原/`runEnforcement`）→ `CHANGE_DEBOUNCE_MS=60min` 合併一封；隔 5 日（5/10/15/20/25/30 `dayMultiple5()`）→ `PERIODIC_INTERVAL 30min` setInterval，即使無流量也會發，當日 `stats_announce_date` 去重
