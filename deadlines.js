@@ -65,6 +65,9 @@ async function forfeitUnpaidByPhase(db, phase) {
             AND club_id != 0
             AND club_id NOT IN (
               SELECT club_id FROM payment_proofs WHERE status = 'approved'
+            )
+            AND club_id NOT IN (
+              SELECT club_id FROM clubs WHERE is_admin = 1 OR (admin_perms IS NOT NULL AND admin_perms != '')
             )`,
     args: [phase]
   });

@@ -343,24 +343,37 @@ function startServer() {
       let insertSql;
       let insertArgs;
 
+      // 管理者保障：督導/幹事以系統管理員與次管理者帳號登入報名時，佔 160 內 2 席、保障不轉候補、免繳費但仍佔位
+      const isSupervisor = !!(req.user.isAdmin || (Array.isArray(req.user.perms) && req.user.perms.length > 0) || req.user.superAdmin);
+
       if (state === 'phase1') {
         const guaranteedQuota = parseInt(settings.guaranteed_quota || '10');
-        insertSql = `
+        if (isSupervisor) {
+          insertSql = `INSERT INTO registrations (club_id, position, name, id_card, birthday, phone, meal_type, phase, status) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'registered')`;
+          insertArgs = [req.user.clubId, position || '', name, id_card || '', birthday || '', phone || '', meal_type || ''];
+        } else {
+          insertSql = `
           INSERT INTO registrations (club_id, position, name, id_card, birthday, phone, meal_type, phase, status)
           SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, 1,
             CASE WHEN (SELECT COUNT(*) FROM registrations WHERE status IN ('registered','paid')) >= ?8
                   OR (SELECT COUNT(*) FROM registrations WHERE club_id = ?9 AND phase = 1 AND status != 'forfeited') >= ?10
                  THEN 'standby' ELSE 'registered' END`;
-        insertArgs = [req.user.clubId, position || '', name, id_card || '', birthday || '', phone || '', meal_type || '', quota, req.user.clubId, guaranteedQuota];
+          insertArgs = [req.user.clubId, position || '', name, id_card || '', birthday || '', phone || '', meal_type || '', quota, req.user.clubId, guaranteedQuota];
+        }
       } else if (state === 'phase1_closed') {
         return res.status(400).json({ error: '第一階段報名已截止' });
       } else if (state === 'phase2') {
-        insertSql = `
+        if (isSupervisor) {
+          insertSql = `INSERT INTO registrations (club_id, position, name, id_card, birthday, phone, meal_type, phase, status) VALUES (?, ?, ?, ?, ?, ?, ?, 2, 'registered')`;
+          insertArgs = [req.user.clubId, position || '', name, id_card || '', birthday || '', phone || '', meal_type || ''];
+        } else {
+          insertSql = `
           INSERT INTO registrations (club_id, position, name, id_card, birthday, phone, meal_type, phase, status)
           SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, 2,
             CASE WHEN (SELECT COUNT(*) FROM registrations WHERE status IN ('registered','paid')) < ?8
                  THEN 'registered' ELSE 'standby' END`;
-        insertArgs = [req.user.clubId, position || '', name, id_card || '', birthday || '', phone || '', meal_type || '', quota];
+          insertArgs = [req.user.clubId, position || '', name, id_card || '', birthday || '', phone || '', meal_type || '', quota];
+        }
       } else {
         return res.status(400).json({ error: '報名已截止' });
       }
