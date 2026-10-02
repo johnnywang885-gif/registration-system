@@ -942,7 +942,7 @@ function startServer() {
 
   // Settings
   // PUT 只允許更新白名單內的 key（防止覆寫 jwt_secret 等系統內部設定）
-  const SETTINGS_ALLOWED_KEYS = ['phase1_deadline', 'payment_deadline', 'phase2_deadline', 'guaranteed_quota', 'phase1_total_quota', 'line_group_id', 'bot_name', 'stats_announce'];
+  const SETTINGS_ALLOWED_KEYS = ['phase1_deadline', 'payment_deadline', 'phase2_deadline', 'guaranteed_quota', 'phase1_total_quota', 'line_group_id', 'line_group_size', 'bot_name', 'stats_announce'];
 
   app.get('/api/admin/settings', authMiddleware, requirePerm('settings'), async (req, res) => {
     try {
@@ -1342,6 +1342,14 @@ function startServer() {
       const groupId = row && row.value;
       const groupMembers = groupId ? await getGroupMemberCount(String(groupId), { force }) : 0;
       const local = await getPushUsage();
+      const cached = await getOne('SELECT value FROM settings WHERE key = ?', ['line_group_members']);
+      let cachedHit = false;
+      try { const parsed = JSON.parse(cached && cached.value); cachedHit = !!(groupId && parsed && parsed[String(groupId)] && parsed[String(groupId)].count > 0); } catch (e) {}
+      let memberSource = groupId ? (cachedHit ? 'line_members_api_cache' : 'unknown') : 'no_group';
+      if (groupId && !cachedHit) {
+        const manual = await getOne('SELECT value FROM settings WHERE key = ?', ['line_group_size']);
+        if (manual && parseInt(manual.value, 10) > 0) memberSource = 'manual_setting';
+      }
       res.json({
         ok: true,
         line_quota: quota && {
@@ -1351,9 +1359,9 @@ function startServer() {
           remaining: quota.unlimited ? null : quota.remaining,
           source: 'LINE /message/quota'
         },
-        local_estimate: { key: local.key, used: local.used, max: PUSH_MAX_MONTH, warn: PUSH_WARN_MONTH, remaining: local.remaining },
-        group: { group_id: groupId || null, members: groupMembers, push_cost: Math.max(1, groupMembers) },
-        note: '群組推播依收件者人數計費，故 local_estimate.used 應與 line_quota.used 接近；若落差大請以 line_quota 為準'
+        local_estimate: { key: local.key, used: local.used, max: PUSH_MAX_MONTH, warn: local.warn, remaining: local.remaining },
+        group: { group_id: groupId || null, members: groupMembers, push_cost: Math.max(1, groupMembers), member_source: memberSource },
+        note: '群組推播依收件者人數計費。若 members/ids 回 403（機器人未取得成員資料同意），請在設定填寫主群組成員人數，否則成本會被低估成 1。本地計數僅為估算，一律以 line_quota 為準'
       });
     } catch (err) {
       console.error('Line quota error:', err.message);

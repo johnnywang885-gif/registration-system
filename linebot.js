@@ -155,6 +155,7 @@ async function getLineQuota(options = {}) {
 
 // ===== 群組成員數快取（推播成本計算依據）=====
 const GROUP_MEMBERS_KEY = 'line_group_members';
+const GROUP_SIZE_KEY = 'line_group_size';
 const GROUP_MEMBERS_TTL_MS = 24 * 60 * 60 * 1000;
 
 async function countGroupMembers(groupId) {
@@ -203,15 +204,29 @@ async function getGroupMemberCount(groupId, options = {}) {
   if (!options.force && entry && Date.now() - (entry.at || 0) < GROUP_MEMBERS_TTL_MS) {
     return entry.count || 0;
   }
-  // 沒有 token 時（例如本機測試）無法更新，但仍應沿用既有快取，避免把成本誤判為 1
-  if (!CHANNEL_ACCESS_TOKEN) return (entry && entry.count) || 0;
+// 沒有 token 時（例如本機測試）無法更新，但仍應沿用既有快取，避免把成本誤判為 1
+if (!CHANNEL_ACCESS_TOKEN) return (entry && entry.count) || (await getManualGroupSize());
   try {
     const count = await countGroupMembers(groupId);
     await cacheGroupMemberCount(groupId, count);
     return count;
   } catch (err) {
     console.error('countGroupMembers error:', err.message);
-    return (entry && entry.count) || 0;
+    // LINE 對未開啟「允許讀取成員資料」的群組會回 403，此時改用後台設定的成員數
+    return (entry && entry.count) || (await getManualGroupSize());
+  }
+}
+
+// 後台手動設定的群組成員數（settings.line_group_size）。
+// 必要成因：LINE 的 /group/{id}/members/ids 需帳號取得該群組成員資料同意，
+// 未開啟時一律回 403，此時只能由管理員填寫，否則群組推播成本會被低估成 1。
+async function getManualGroupSize() {
+  try {
+    const row = await getOne('SELECT value FROM settings WHERE key = ?', [GROUP_SIZE_KEY]);
+    const n = parseInt(row && row.value, 10);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  } catch (e) {
+    return 0;
   }
 }
 
@@ -1018,4 +1033,4 @@ async function handleLineEvent(event) {
   await replyMessage(event.replyToken, answer.text || '抱歉，因忙線中暫時無法回答。您的問題我已記錄，稍後回覆您，請見諒！');
 }
 
-module.exports = { verifySignature, handleLineEvent, pushToGroup, pushToGroupDetail, pushToUser, pushToLineUser, refreshSourceNames, syncGroupMembers, summarizeMessages, generateAnnouncement, getGroundingUsage, canUseGrounding, recordGroundingUse, recordWebhookDiag, answerQuestion, retrieveKnowledge, getPushUsage, canPush, recordPushUse, PUSH_MAX_MONTH, PUSH_WARN_MONTH, pushMonthKey, getLineQuota, getGroupMemberCount, targetCost };
+module.exports = { verifySignature, handleLineEvent, pushToGroup, pushToGroupDetail, pushToUser, pushToLineUser, refreshSourceNames, syncGroupMembers, summarizeMessages, generateAnnouncement, getGroundingUsage, canUseGrounding, recordGroundingUse, recordWebhookDiag, answerQuestion, retrieveKnowledge, getPushUsage, canPush, recordPushUse, PUSH_MAX_MONTH, PUSH_WARN_MONTH, pushMonthKey, getLineQuota, getGroupMemberCount, getManualGroupSize, targetCost };

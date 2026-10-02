@@ -49,13 +49,15 @@ npm run dev        # node --watch
 ### Stats Announce (`stats_announce.js` + `linebot.js:pushToDetail`)
 - 雙觸發：異動（註冊/刪除/繳費/遞補/清空/還原/`runEnforcement`）→ `CHANGE_DEBOUNCE_MS=60min` 合併；隔 5 日（5/10/15/20/25/30 `dayMultiple5()`）→ `PERIODIC_INTERVAL 30min` setInterval，當日 `stats_announce_date` 去重
 - 內容 `collectStats()` 各階段人數 + 繳費社數 + 剩餘；`stats_announce=off` 全停（`settings` 白名單）；`change` 時 `stats_last_snapshot` 相同跳過
-- 月預算 `push_YYYY-MM` 計成功 `push`。**群組推播依收件者人數計費**（LINE 官方：訊息數 = 收到訊息的人數），故群組成本 = `line_group_members` 快取人數、個人 = 1；`targetCost()` 為唯一入口。41 人群組推 1 則 = 記 41
+- 月預算 `push_YYYY-MM` 計成功 `push`。**群組推播依收件者人數計費**（LINE 官方：訊息數 = 收到訊息的人數），故群組成本 = 群組成員數、個人 = 1；`targetCost()` 為唯一入口。41 人群組推 1 則 = 記 41
 - `PUSH_MAX=200`（`PUSH_MONTHLY_LIMIT`）是**自訂安全天花板非 LINE 實際配額**；權威數字為 `GET /message/quota`（`getLineQuota()`，60s 快取）+ `/message/quota/consumption`。`canPush()` 與 `stats_announce` 的 WARN 護欄**一律優先採信官方剩餘**，僅在查不到官方配額時才退回本地估算——否則本地髒值會鎖死推播
 - **勿**在遇 `You have reached your monthly limit` 時把本地計數寫死成 `MAX`：官方 FAQ 明載即使仍有額度，也可能因其他訊息正在投遞、額度被暫時預 reserve 而誤報 429。舊版因此一次誤報鎖死整月（2026-09/10 皆發生）。現行為僅清 `quotaCache` 讓下次重查
-- 群組成員數快取 `line_group_members`（JSON，24h TTL），由 `getGroupMemberCount()` 讀、`syncGroupMembers` 預熱；無 token 時仍讀快取（勿早退 0）
+- 群組成員數來源順序：`line_group_members` 快取（24h TTL，`syncGroupMembers` 預熱）→ 後台設定 `line_group_size` → 1
+- **`members/ids` 常回 403**：機器人未取得該群組「允許讀取成員資料」同意時一律 403（正式環境 2026-10-03 實測），快取永遠為 0。**勿**因為拿不到人數就假設成本=1，必須靠後台設定的 `line_group_size`（設定頁「主群組成員人數」）
 - `recordPushUse` 為 SQL 原子累加（`CAST(CAST(value AS INTEGER) + ? AS TEXT)`），勿改回 read-then-write
-- 診斷：`GET /api/admin/line-quota`（`linedigest` 權限，`?refresh=1` 強制重查）；`POST /api/admin/push-budget/reset`（`settings` 權限）歸零當月本地計數
+- 診斷：`GET /api/admin/line-quota`（`linedigest` 權限，`?refresh=1` 強制重查，含 `group.member_source`）；`POST /api/admin/push-budget/reset`（`settings` 權限）歸零當月本地計數
 - 下月 key 重置（`review_k` 守護）
+- 實測（2026-10-03）：官方 `limit=200 used=200 remaining=0`，5 則群組統計 × 41 人 ≈ 205 則即耗盡月免費額度。**重置本地計數不會恢復官方額度**（兩者是不同東西）；11/1 前無法推播，期間用免額度替代方案
 - 免額度：主群組 `統計/報名進度/目前報名/查統計` → `replyMessage` 回 `buildStatsMessage()`；後台 `GET /api/admin/stats-message` 回同款文字供複製手貼
 
 ### Auth (`auth.js`)
@@ -84,5 +86,5 @@ npm run dev        # node --watch
 - `summary` 依最早註冊排序，無報名者置底；`today>payment_deadline` 時 header 與各列同切 `phase1PaidTotal`/`phase1_paid`
 - `export` 的 `rowCond/clubCond` 為內聯已校驗字面量（不可用 `?`，否則 libSQL 歸 0）；`registered→已報名/standby→候補/paid→已繳費/其餘→棄權`
 - 公開 API 過濾：`GET /api/summary` 與 `backup` 過濾 `jwt_secret` + `stats_*`/`push_*`/`grounding_*`/`webhook_*`/**`line_*`**（`line_group_id` 與成員數快取屬內部識別資訊）
-- `/api/admin/settings` PUT 僅白名單 `phase1_deadline/payment_deadline/phase2_deadline/guaranteed_quota/phase1_total_quota/line_group_id/bot_name/stats_announce`
+- `/api/admin/settings` PUT 僅白名單 `phase1_deadline/payment_deadline/phase2_deadline/guaranteed_quota/phase1_total_quota/line_group_id/line_group_size/bot_name/stats_announce`
 - 欄位長度上限與 `PUT clubs` 社名非空校驗；`restore` 預先全量校驗 `jwt_secret`/惡意 `file_path`/非法 `club_id` → 400 不動 DB

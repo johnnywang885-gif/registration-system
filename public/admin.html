@@ -193,11 +193,18 @@
           </div>
           <div class="form-row">
             <div class="form-group">
+              <label>主群組成員人數</label>
+              <input type="number" id="settingLineGroupSize" min="0" step="1">
+              <div style="font-size: 12px; color: #8a6a3b; margin-top: 6px;">LINE 依「收到訊息的人數」計費，41 人群組推 1 則即扣 41 則額度。機器人未取得該群組成員資料同意時 LINE 會回 403，此欄位用來手動填寫人數以正確計算成本；填 0 代表沿用 LINE 回報值。</div>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
               <label>
                 <input type="checkbox" id="settingStatsAnnounce" style="margin-right: 6px; vertical-align: middle;">
                 報名人數異動時自動公告報名進度到 LINE 群組
               </label>
-              <div style="font-size: 12px; color: #999; margin-top: 6px;">異動（新增/刪除/繳費/棄權/遞補）後約 60 分鐘自動推播一次目前報名人數與繳費情形（多筆異動合併為一封）；每月 5、10、15、20、25、30 號亦會各公告一次（當日已公告過則不重複）。每月推播達 180/200 則後自動統計將完全跳過以保留額度給手動公告。取消勾選即完全停用。</div>
+              <div style="font-size: 12px; color: #999; margin-top: 6px;">異動（新增/刪除/繳費/棄權/遞補）後約 60 分鐘自動推播一次目前報名人數與繳費情形（多筆異動合併為一封）；每月 5、10、15、20、25、30 號亦會各公告一次（當日已公告過則不重複）。額度剩餘不足時自動統計會停發（以 LINE 官方剩餘為準），並優先改用免額度的「複製進度文字」。取消勾選即完全停用。</div>
               <div id="statsAnnounceStatus" style="font-size: 13px; margin-top: 8px;">尚未公告過</div>
               <div id="pushBudgetStatus" style="font-size: 13px; margin-top: 8px; color:#4a3728;"></div>
               <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">
@@ -1173,6 +1180,7 @@
         document.getElementById('settingPhase2').value = data.phase2_deadline || '';
         document.getElementById('settingQuota').value = data.guaranteed_quota || 10;
         document.getElementById('settingPhase1Quota').value = data.phase1_total_quota || 160;
+        document.getElementById('settingLineGroupSize').value = data.line_group_size || 0;
         document.getElementById('settingStatsAnnounce').checked = data.stats_announce !== 'off';
         document.getElementById('settingCurrentPhase').textContent = phaseLabels[data.derived_phase] || data.derived_phase || '-';
         document.getElementById('phaseInfoText').textContent =
@@ -1205,8 +1213,19 @@
         const max = typeof d.push_max === 'number' ? d.push_max : (parseInt(d.push_max,10)||200);
         const warn = typeof d.push_warn === 'number' ? d.push_warn : (parseInt(d.push_warn,10)||180);
         const remaining = typeof d.push_remaining === 'number' ? d.push_remaining : Math.max(0, max - used);
-        const warnPart = used >= warn ? `<span style="color:#b85c4f;">（已達 ${warn}/${max}，自動統計將完全跳過）</span>` : (used >= max - 30 ? `<span style="color:#b85c4f;">（剩餘 ${remaining} 則，請節省手動推播）</span>` : '');
-        pushEl.innerHTML = `本月群組推播：已用 <b>${used}</b> / ${max} 則，剩餘 <b>${remaining}</b> 則 ${warnPart}`;
+        const q = d.line_quota;
+        // 以 LINE 官方配額為權威數字；本地計數僅為估算（群組成本可能抓不到人數）
+        const groupSize = d.line_group_size ? parseInt(d.line_group_size,10) : 0;
+        const costHint = groupSize > 0 ? `（群組推播 1 則 ≈ ${groupSize} 則額度）` : '';
+        if (q && !q.unlimited && q.remaining != null) {
+          const ex = q.remaining <= 0
+            ? '<span style="color:#b85c4f;">（已用盡，11/1 起自動恢復；期間請用「複製進度文字」免額度方案）</span>'
+            : (q.remaining < groupSize * 3 ? `<span style="color:#b85c4f;">（剩餘 ${q.remaining} 則，不足再推一則群組公告）</span>` : '');
+          pushEl.innerHTML = `LINE 官方額度：已用 <b>${q.used}</b> / ${q.limit} 則，剩餘 <b>${q.remaining}</b> 則 ${costHint} ${ex}`;
+        } else {
+          const warnPart = used >= warn ? `<span style="color:#b85c4f;">（已達 ${warn}/${max}，自動統計將完全跳過）</span>` : (used >= max - 30 ? `<span style="color:#b85c4f;">（剩餘 ${remaining} 則，請節省手動推播）</span>` : '');
+          pushEl.innerHTML = `本月推播（本地估算，讀不到官方額度）：已用 <b>${used}</b> / ${max} 則，剩餘 <b>${remaining}</b> 則 ${warnPart}`;
+        }
       }
     }
 
@@ -1258,6 +1277,7 @@
         phase2_deadline: document.getElementById('settingPhase2').value,
         guaranteed_quota: document.getElementById('settingQuota').value,
         phase1_total_quota: document.getElementById('settingPhase1Quota').value,
+        line_group_size: document.getElementById('settingLineGroupSize').value,
         stats_announce: document.getElementById('settingStatsAnnounce').checked ? 'on' : 'off'
       };
 
