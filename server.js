@@ -43,7 +43,8 @@ function sanitizeSettings(settings, options = {}) {
   const out = {};
   for (const [key, value] of Object.entries(settings)) {
     if (key === 'jwt_secret') continue;
-    if (publicOnly && (key.startsWith('grounding_') || key.startsWith('webhook_') || key.startsWith('stats_') || key.startsWith('push_'))) continue;
+    // line_ 前綴含群組/個人 ID 與成員數快取，屬內部識別資訊，一律不對公開 API 輸出
+    if (publicOnly && (key.startsWith('grounding_') || key.startsWith('webhook_') || key.startsWith('stats_') || key.startsWith('push_') || key.startsWith('line_'))) continue;
     out[key] = value;
   }
   return out;
@@ -956,6 +957,12 @@ function startServer() {
         const { getPushUsage } = require('./linebot');
         pushUsage = await getPushUsage();
       } catch (e) {}
+      // LINE 官方配額（權威數字）：群組推播依人數計費，本地計數僅為估算
+      let lineQuota = null;
+      try {
+        const { getLineQuota } = require('./linebot');
+        lineQuota = await getLineQuota();
+      } catch (e) {}
       res.json({
         ...sanitizeSettings(settings),
         derived_phase: phaseState(settings, today),
@@ -965,7 +972,13 @@ function startServer() {
         push_used: pushUsage.used,
         push_max: pushUsage.max,
         push_warn: pushUsage.warn,
-        push_remaining: pushUsage.remaining
+        push_remaining: pushUsage.remaining,
+        line_quota: lineQuota && {
+          unlimited: !!lineQuota.unlimited,
+          limit: lineQuota.limit,
+          used: lineQuota.used,
+          remaining: lineQuota.unlimited ? null : lineQuota.remaining
+        }
       });
     } catch (err) {
       console.error('Settings load error:', err.message);
@@ -1316,6 +1329,55 @@ function startServer() {
     } catch (err) {
       console.error('Line diag error:', err.message);
       res.status(500).json({ error: '載入失敗' });
+    }
+  });
+
+  // LINE 官方配額診斷（權威數字 + 群組推播實際成本）
+  app.get('/api/admin/line-quota', authMiddleware, requirePerm('linedigest'), async (req, res) => {
+    try {
+      const { getLineQuota, getGroupMemberCount, getPushUsage, pushMonthKey, PUSH_MAX_MONTH, PUSH_WARN_MONTH } = require('./linebot');
+      const force = req.query.refresh === '1';
+      const quota = await getLineQuota({ force });
+      const row = await getOne("SELECT value FROM settings WHERE key = 'line_group_id'");
+      const groupId = row && row.value;
+      const groupMembers = groupId ? await getGroupMemberCount(String(groupId), { force }) : 0;
+      const local = await getPushUsage();
+      res.json({
+        ok: true,
+        line_quota: quota && {
+          unlimited: !!quota.unlimited,
+          limit: quota.limit,
+          used: quota.used,
+          remaining: quota.unlimited ? null : quota.remaining,
+          source: 'LINE /message/quota'
+        },
+        local_estimate: { key: local.key, used: local.used, max: PUSH_MAX_MONTH, warn: PUSH_WARN_MONTH, remaining: local.remaining },
+        group: { group_id: groupId || null, members: groupMembers, push_cost: Math.max(1, groupMembers) },
+        note: '群組推播依收件者人數計費，故 local_estimate.used 應與 line_quota.used 接近；若落差大請以 line_quota 為準'
+      });
+    } catch (err) {
+      console.error('Line quota error:', err.message);
+      res.status(500).json({ error: '載入失敗' });
+    }
+  });
+
+  // 重置本月本地推播計數（僅設定表，不動任何報名資料）
+  // 用途：舊版會因 LINE 誤報而把計數寫死成上限，導致整月推播被鎖死
+  app.post('/api/admin/push-budget/reset', authMiddleware, requirePerm('settings'), async (req, res) => {
+    try {
+      const { pushMonthKey, getPushUsage } = require('./linebot');
+      const key = pushMonthKey();
+      const before = await getOne('SELECT value FROM settings WHERE key = ?', [key]);
+      await runQuery(
+        "INSERT INTO settings (key, value) VALUES (?, '0') ON CONFLICT(key) DO UPDATE SET value = '0'",
+        [key]
+      );
+      const after = await getPushUsage();
+      console.log(`[push_budget] manual reset ${key}: ${(before && before.value) || 0} -> 0`);
+      res.json({ ok: true, key, before: parseInt((before && before.value) || '0', 10) || 0, after: after.used, max: after.max, warn: after.warn, remaining: after.remaining });
+    } catch (err) {
+      console.error('Push budget reset error:', err.message);
+      res.status(500).json({ error: '重置失敗' });
     }
   });
 

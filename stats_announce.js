@@ -116,14 +116,25 @@ async function openFailTicketIfNeeded() {
 async function sendStatsAnnounce(reason = 'change') {
   try {
     if (!(await isEnabled())) return false;
-    // 自動統計月預算護欄：達 WARN 後完全跳過，不計失敗
+    // 自動統計月預算護欄：達 WARN 後完全跳過，不計失敗。
+    // 以 LINE 官方配額為準（權威）；查不到才用本地估算，避免舊版髒值鎖死自動公告。
     if (reason !== 'manual') {
       try {
-        const { getPushUsage } = require('./linebot');
-        const { used, warn, max } = await getPushUsage();
-        if (used >= warn) {
-          console.log(`[stats_announce] skipped by push budget guard (${used}/${max}, warn=${warn}, reason=${reason})`);
-          return false;
+        const { getLineQuota, getGroupMemberCount, getPushUsage, PUSH_WARN_MONTH, PUSH_MAX_MONTH } = require('./linebot');
+        const quota = await getLineQuota();
+        const groupRow = await getOne("SELECT value FROM settings WHERE key = 'line_group_id'");
+        const cost = Math.max(1, groupRow && groupRow.value ? await getGroupMemberCount(String(groupRow.value)) : 1);
+        if (quota && !quota.unlimited && quota.remaining != null) {
+          if (quota.remaining < cost) {
+            console.log(`[stats_announce] skipped by LINE quota guard (${quota.remaining}/${quota.limit}, cost=${cost}, reason=${reason})`);
+            return false;
+          }
+        } else {
+          const { used, max } = await getPushUsage();
+          if (used >= PUSH_WARN_MONTH) {
+            console.log(`[stats_announce] skipped by push budget guard (${used}/${max}, warn=${PUSH_WARN_MONTH}, reason=${reason})`);
+            return false;
+          }
         }
       } catch (e) {}
     }

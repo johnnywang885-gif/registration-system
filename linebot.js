@@ -16,7 +16,8 @@ const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
 const GEMINI_API = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 const SYSTEM_URL = process.env.SYSTEM_URL || 'https://registration-system-bxgr.onrender.com';
 
-// 每月推播預算（LINE 免費帳號 200 則/月，達 WARN 閾值後自動統計完全跳過）
+// 每月推播預算上限。這是本專案自訂的安全天花板，不是 LINE 的實際配額；
+// 真正的剩餘量以 LINE 官方 /message/quota 為準（見 getLineQuota）。
 const PUSH_MAX_MONTH = (() => {
   const v = parseInt(process.env.PUSH_MONTHLY_LIMIT, 10);
   return Number.isFinite(v) && v > 0 ? v : 200;
@@ -110,7 +111,123 @@ async function pushToUser(userId, text) {
   return pushToLineUser(userId, text);
 }
 
-// ===== 每月推播預算（主群組 1 則或各社逐筆皆計 1 則；成功才累計） =====
+// ===== LINE 官方配額（權威數字）=====
+// 為何不能只靠本地計次：LINE 對「推播到群組」是依收件者人數計費，
+// 官方 FAQ 明載「The number of messages is counted by the number of people
+// to whom the message was sent」。主群組 41 人時，推 1 則實際消耗 41 則額度，
+// 若本地只記 1 次會嚴重少記，進而誤判成「額度還很充足」。
+// /message/push 的回應不含剩餘量，唯一可靠來源是 quota API。
+const QUOTA_TTL_MS = 60 * 1000;
+let quotaCache = null; // { at, unlimited, limit, used, remaining }
+
+async function lineGet(path) {
+  const res = await fetchWithTimeout(`${LINE_API}${path}`, {
+    headers: { 'Authorization': `Bearer ${CHANNEL_ACCESS_TOKEN}` }
+  }, 15000);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+// 回傳 { unlimited, limit, used, remaining }；失敗或未設定 token 回 null（呼叫端退回本地估算）
+async function getLineQuota(options = {}) {
+  if (!CHANNEL_ACCESS_TOKEN) return null;
+  const now = Date.now();
+  if (!options.force && quotaCache && now - quotaCache.at < QUOTA_TTL_MS) return quotaCache;
+  try {
+    const [q, c] = await Promise.all([lineGet('/message/quota'), lineGet('/message/quota/consumption')]);
+    const unlimited = !q || q.type === 'none' || q.value == null;
+    const limit = unlimited ? null : parseInt(q.value, 10);
+    const rawUsed = c && c.totalUsage != null ? parseInt(c.totalUsage, 10) : NaN;
+    const used = Number.isFinite(rawUsed) ? rawUsed : null;
+    quotaCache = {
+      at: now,
+      unlimited,
+      limit,
+      used,
+      remaining: unlimited ? Infinity : (used == null ? null : Math.max(0, limit - used))
+    };
+    return quotaCache;
+  } catch (err) {
+    console.error('LINE quota error:', err.message);
+    return null;
+  }
+}
+
+// ===== 群組成員數快取（推播成本計算依據）=====
+const GROUP_MEMBERS_KEY = 'line_group_members';
+const GROUP_MEMBERS_TTL_MS = 24 * 60 * 60 * 1000;
+
+async function countGroupMembers(groupId) {
+  let start = null;
+  let total = 0;
+  do {
+    const qs = start ? `?start=${encodeURIComponent(start)}` : '';
+    const data = await lineGet(`/group/${encodeURIComponent(groupId)}/members/ids${qs}`);
+    total += (data.memberIds || []).length;
+    start = data.next || null;
+  } while (start);
+  return total;
+}
+
+// 寫入群組成員數快取（供 targetCost 使用）
+async function cacheGroupMemberCount(groupId, count) {
+  let cache = null;
+  try {
+    const row = await getOne('SELECT value FROM settings WHERE key = ?', [GROUP_MEMBERS_KEY]);
+    if (row && row.value) {
+      const parsed = JSON.parse(row.value);
+      if (parsed && typeof parsed === 'object') cache = parsed;
+    }
+  } catch (e) {}
+  cache = cache || {};
+  cache[groupId] = { count, at: Date.now() };
+  await runQuery(
+    'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+    [GROUP_MEMBERS_KEY, JSON.stringify(cache)]
+  ).catch(() => {});
+  return count;
+}
+
+// 優先用快取；快取不存在或逾期才實際呼叫 LINE（members/ids 不計費）
+async function getGroupMemberCount(groupId, options = {}) {
+  if (!groupId) return 0;
+  let cache = null;
+  try {
+    const row = await getOne('SELECT value FROM settings WHERE key = ?', [GROUP_MEMBERS_KEY]);
+    if (row && row.value) {
+      const parsed = JSON.parse(row.value);
+      if (parsed && typeof parsed === 'object') cache = parsed;
+    }
+  } catch (e) {}
+  const entry = cache && cache[groupId];
+  if (!options.force && entry && Date.now() - (entry.at || 0) < GROUP_MEMBERS_TTL_MS) {
+    return entry.count || 0;
+  }
+  // 沒有 token 時（例如本機測試）無法更新，但仍應沿用既有快取，避免把成本誤判為 1
+  if (!CHANNEL_ACCESS_TOKEN) return (entry && entry.count) || 0;
+  try {
+    const count = await countGroupMembers(groupId);
+    await cacheGroupMemberCount(groupId, count);
+    return count;
+  } catch (err) {
+    console.error('countGroupMembers error:', err.message);
+    return (entry && entry.count) || 0;
+  }
+}
+
+// 群組/多人聊天室代碼開頭為 C 或 R（官方 FAQ），個人為 U
+function isGroupTarget(to) {
+  const s = String(to || '');
+  return s.startsWith('C') || s.startsWith('R');
+}
+
+// 本次推播實際消耗的額度：群組 = 成員人數，個人 = 1
+async function targetCost(to) {
+  if (!isGroupTarget(to)) return 1;
+  return Math.max(1, await getGroupMemberCount(String(to)));
+}
+
+// ===== 每月推播預算（成功才累計；群組推播依收件者人數計） =====
 function pushMonthKey() {
   return 'push_' + taipeiToday().slice(0, 7);
 }
@@ -123,6 +240,13 @@ async function getPushUsage() {
 }
 
 async function canPush(n = 1) {
+  // LINE 官方配額可取得時以它為唯一依據。本地計數只是估算，若仍當硬門檻，
+  // 舊版誤寫的髒值（例如把 push_YYYY-MM 寫死成 MAX）會永久鎖死推播。
+  const quota = await getLineQuota();
+  if (quota && !quota.unlimited && quota.remaining != null) {
+    return quota.remaining >= n;
+  }
+  // 查不到官方配額（無 token／API 失敗）才退回本地估算
   try {
     const { used, max } = await getPushUsage();
     return used + n <= max;
@@ -132,12 +256,13 @@ async function canPush(n = 1) {
   }
 }
 
+// 原子累加：避免 read-then-write 在併發推播時互相覆蓋而少記
 async function recordPushUse(n = 1) {
   try {
-    const { key, used } = await getPushUsage();
+    const key = pushMonthKey();
     await runQuery(
-      "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?",
-      [key, String(used + n), String(used + n)]
+      "INSERT INTO settings (key, value) VALUES (?, CAST(? AS TEXT)) ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + CAST(? AS INTEGER) AS TEXT)",
+      [key, String(n), String(n)]
     );
   } catch (err) {
     console.error('recordPushUse error:', err.message);
@@ -148,15 +273,20 @@ async function recordPushUse(n = 1) {
 async function pushToDetail(to, text) {
   if (!CHANNEL_ACCESS_TOKEN) return { ok: false, status: 0, error: 'no_token' };
   if (!to) return { ok: false, status: 0, error: 'no_target' };
-  // 月預算硬上限：超過 PUSH_MAX 即拒絕發送（所有推播皆經此，含群組與各社逐筆）
-  if (!(await canPush(1))) {
+  // 群組推播依收件者人數計費，先算出本次成本再判斷額度
+  const cost = await targetCost(to);
+  if (!(await canPush(cost))) {
+    const quota = await getLineQuota();
     const { used, max } = await getPushUsage();
-    const msg = `push budget exceeded (${used}/${max})`;
+    const msg = (quota && !quota.unlimited && quota.remaining != null && quota.remaining < cost)
+      ? `LINE 剩餘額度不足（剩 ${quota.remaining}/${quota.limit}，本次需 ${cost}）`
+      : `push budget exceeded (${used}/${max})`;
     console.error('LINE push blocked by budget:', msg);
     return { ok: false, status: 429, error: msg };
   }
   try {
     const res = await lineRequest('/message/push', { to, messages: [{ type: 'text', text }] });
+    quotaCache = null; // 成功發送後官方用量必然變動，下次重查
     if (!res.ok) {
       const body = await res.text().catch(() => '');
       console.error('LINE push error:', res.status, body);
@@ -165,20 +295,15 @@ async function pushToDetail(to, text) {
         const j = JSON.parse(body);
         if (j && j.message) error = j.message;
       } catch (e) {}
-      // LINE 額度耗盡時同步本地計數至 MAX，使自動統計立即完全跳過
+      // 注意：官方 FAQ 明載即使仍有額度，也可能因「其他訊息正在投遞、額度被暫時預留」
+      // 而收到 You have reached your monthly limit.。因此這裡只清掉配額快取讓下次重查，
+      // 絕不把本地計數寫死成 MAX —— 否則一次誤報就會鎖死整個月的推播。
       if (error && /reached your monthly limit/i.test(error)) {
-        try {
-          const { key } = await getPushUsage();
-          await runQuery(
-            "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?",
-            [key, String(PUSH_MAX_MONTH), String(PUSH_MAX_MONTH)]
-          );
-          console.log(`[push_budget] synced ${key} to MAX ${PUSH_MAX_MONTH} due to LINE monthly limit`);
-        } catch (e) {}
+        console.log('[push_budget] LINE reported monthly limit; cache invalidated, local counter untouched');
       }
       return { ok: false, status: res.status, error };
     }
-    await recordPushUse(1);
+    await recordPushUse(cost);
     return { ok: true, status: res.status, error: null };
   } catch (err) {
     console.error('LINE push error:', err.message);
@@ -691,6 +816,12 @@ async function syncGroupMembers() {
 
       gInfo.apiMembers = memberIds.length;
       gInfo.ok = memberIds.length > 0;
+      // 分頁未中斷才代表完整名單，此時順帶預熱成員數快取（避免推播時才現查）
+      if (!paginationBroke) {
+        try {
+          await cacheGroupMemberCount(g.source_id, memberIds.length);
+        } catch (e) {}
+      }
       for (const memberId of memberIds) {
         try {
           const pRes = await fetchWithTimeout(`${LINE_API}/profile/${encodeURIComponent(memberId)}`, {
@@ -887,4 +1018,4 @@ async function handleLineEvent(event) {
   await replyMessage(event.replyToken, answer.text || '抱歉，因忙線中暫時無法回答。您的問題我已記錄，稍後回覆您，請見諒！');
 }
 
-module.exports = { verifySignature, handleLineEvent, pushToGroup, pushToGroupDetail, pushToUser, pushToLineUser, refreshSourceNames, syncGroupMembers, summarizeMessages, generateAnnouncement, getGroundingUsage, canUseGrounding, recordGroundingUse, recordWebhookDiag, answerQuestion, retrieveKnowledge, getPushUsage, canPush, recordPushUse, PUSH_MAX_MONTH, PUSH_WARN_MONTH, pushMonthKey };
+module.exports = { verifySignature, handleLineEvent, pushToGroup, pushToGroupDetail, pushToUser, pushToLineUser, refreshSourceNames, syncGroupMembers, summarizeMessages, generateAnnouncement, getGroundingUsage, canUseGrounding, recordGroundingUse, recordWebhookDiag, answerQuestion, retrieveKnowledge, getPushUsage, canPush, recordPushUse, PUSH_MAX_MONTH, PUSH_WARN_MONTH, pushMonthKey, getLineQuota, getGroupMemberCount, targetCost };
