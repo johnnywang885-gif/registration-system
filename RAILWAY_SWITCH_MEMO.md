@@ -25,7 +25,7 @@
 
 ## 管理員帳號
 - 帳號：admin
-- 密碼：admin123
+- 密碼：admin1234（2026-11-24 已改，舊的 admin123 失效）
 
 ## 聯絡人
 - 項目：區會報名系統（registration-system）
